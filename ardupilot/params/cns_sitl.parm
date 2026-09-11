@@ -1,6 +1,6 @@
 # cns_sitl.parm — realistic sensor error for celestial navigation testing.
 #
-#   sim_vehicle.py -v ArduPlane --add-param-file=$PWD/params/cns_sitl.parm \
+#   sim_vehicle.py -v ArduPlane --add-param-file=$PWD/ardupilot/params/cns_sitl.parm \
 #                  --console --map --out=udp:127.0.0.1:14556
 #
 # WHY THIS FILE EXISTS

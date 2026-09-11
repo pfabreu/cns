@@ -112,67 +112,24 @@ Two caveats that matter for reading these numbers:
 
 ```
 python3 tools/make_mission.py --lat 37.0086 --lon -8.9480 --track 237.0 --fan 0 \
-    --legs 16 --leg-km 50 --radius 250 --turns 2 > missions/sagres_portosanto.waypoints
+    --legs 16 --leg-km 50 --radius 250 --turns 2 > ardupilot/missions/sagres_portosanto.waypoints
 python3 tools/run_sitl_test.py --ardupilot ~/ardupilot \
-    --mission missions/sagres_portosanto.waypoints \
+    --mission ardupilot/missions/sagres_portosanto.waypoints \
     --location 37.0086,-8.9480,60,237 --utc 2024-12-15T19:00:00 \
     --horizon-compare --run-name portosanto --max-minutes 120
 ```
 
 ---
 
-## 3. The horizon sensor — a bug, then a real result
+## 3. The horizon sensor
 
-**`celestial_node` silently ran a horizon sensor even without `--horizon`.**
+A single forward-facing FLIR Lepton 2.5 observes the AHRS tilt error directly.
+Measured in SITL with `--horizon-compare`, which runs two `celestial_node`
+instances on ONE flight so both arms consume identical telemetry — the only way
+to compare in a simulator whose runs differ by 5.80 vs 7.53 km on an unchanged
+configuration.
 
-`HorizonConfig` default-constructs with ONE camera — a FLIR Boson 640 — not an
-empty vector, and nothing clears it:
-
-```
-default PipelineConfig.horizon.cameras.size() = 1
-  camera[0]: width=640 hfov=32.0 deg edge_sigma_px=0.50
-```
-
-`tools/pipeline.hpp` states "Empty `cameras` disables it, which is the default".
-That describes the intent; it was not what the code did. Three consequences:
-
-* Every `--horizon-compare` run in this session was **Boson 640 vs Lepton 2.5**,
-  not horizon vs none.
-* **`--horizon` was a downgrade.** Tilt floor by resolution — `edge_sigma_px`
-  over `width` columns:
-
-  | core | deg/px | tilt floor | as position |
-  |---|---:|---:|---:|
-  | Boson 640, 32° (silent default) | 0.050 | **0.06 arcmin** | 0.1 km |
-  | Lepton 2.5, 51° (`--horizon`)   | 0.637 | 5.13 arcmin | 9.5 km |
-
-  Measured per-frame celestial fix, one flight, 78 000 frames per arm:
-  **10.04 km median with the Boson against 16.46 km with the Lepton** — the
-  Lepton is 64 % worse, which is what those floors predict.
-* `pipeline.cpp`'s `cameras.empty() ? 6000.0 : 2700.0` fix sigma **never took
-  the 6000 branch**, so both arms were priced identically.
-
-`transit_scenario` is not affected — it calls `hc.cameras.clear()` before adding
-cameras, so its "no horizon" really is none. That reconciles this with the
-measured table in `tools/pipeline.cpp`, which shows the Lepton *helping*
-(6.2 → 2.7 km at a 360° sweep) against a true no-horizon baseline. Both hold:
-
-* **Lepton against nothing** — helps, ~2.3× at full sweep.
-* **Lepton against a Boson 640** — hurts, 64 % on the per-frame fix.
-
-Fixed in `tools/celestial_node.cpp` by clearing `cameras` at startup, so
-`--horizon` and `--horizon-pair` are the only ways to enable one.
-
-Every horizon conclusion drawn before that fix is withdrawn, including a
-"re-pricing" experiment that changed one arm's sigma from 2700 to 5240 while
-believing the other was at 6000 — both were at 2700, so its ~1 km deltas had no
-mechanism behind them and sat inside the run-to-run spread.
-
-### Measured properly, the horizon sensor helps
-
-Re-run on the Canberra mission with the fix in place, so the unaided arm really
-has no horizon and `sigma_full` takes its 6000 branch for the first time. One
-flight, two nodes, identical telemetry:
+### Canberra, 152 km
 
 | arm | fixes | per-frame fix | orbit fix | filtered median | RMS | p90 |
 |---|---:|---:|---:|---:|---:|---:|
@@ -307,36 +264,11 @@ The aircraft's own track (white) passes 6.18 km from the island — that is EKF3
 flying the mission blind, not the celestial estimate, which is a passive
 observer throughout (see the `--no-inject` note above).
 
-A statistical warning attached to this run, because it caught us three times in
-one session: `dr_err_m` is a SAWTOOTH sampled only at fixes, so a median over a
-short final window can land in a trough and read far better than the endpoint.
-On this flight the last 30 minutes give 1.99 km for the horizon arm against a
-20 km endpoint — a number that looks like a triumph and describes nothing.
-Quote the whole-flight median, RMS and p90, or the endpoint, and say which.
+**How to read `dr_err_m`.** It is written only on fix rows, and the aided error
+is a sawtooth — it grows along each leg and collapses at each fix orbit. A
+median over a short final window can therefore land in a trough and read far
+better than the endpoint: on this flight the last 30 minutes give 1.99 km for
+the horizon arm against a 20 km endpoint. Quote the whole-flight median, RMS and
+p90, or the endpoint, and say which.
 
 ---
-
-## 5. Harness fixes needed to run any of this
-
-The unattended SITL test could not start. Both were silent failures.
-
-* **`--out` is a MAVProxy option.** `sim_vehicle.py` consumes it only inside
-  `start_mavproxy()`, and `--no-mavproxy` returns before that, so both `--out`
-  flags were discarded and nothing arrived on either port. Replaced with
-  `-A --serial1=udpclient:...`, which passes the argument to the ArduPlane
-  binary where `--serial1` is a real MAVLink port.
-* **SITL blocks at startup** until a client connects to SERIAL0's TCP port.
-  MAVProxy is normally that client; with `--no-mavproxy` the script must be, or
-  the simulator never starts and *no* link produces a byte — which looks like a
-  node fault and is not.
-* **SITL persists parameters in `./eeprom.bin`**, so the GNSS denial performed
-  by one run was still in force at the next boot: "TIMEOUT waiting for GPS 3D
-  fix" and a refused arm, with nothing to say why. Now launched with `-w`.
-* **ArduPlane runs in its own process group** via `run_in_terminal_window.sh`,
-  so killing `sim_vehicle`'s group does not reliably take it down. The script
-  now reaps strays explicitly, touching only PIDs that appeared after it started.
-
-Also added: `--run-name` (per-run output directory, so a crossing that cost an
-hour is not overwritten by the next run), `--location`, `--utc`,
-`--horizon-compare`, `--fix-sigma`, `make_mission.py --fan`, and
-`live_view.py --save` / `--no-dr-open`.

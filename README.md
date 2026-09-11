@@ -119,11 +119,8 @@ Whether that is *enough* depends on the target:
   configurations (12 km and 20 km at the final fix). This is where the system
   as configured runs out.
 
-Two findings from that campaign are worth reading before trusting any of it:
-the auto-exposure controller had a **cliff below ~50 ms** that cost every fix in
-a turn, and `celestial_node` was **silently running a horizon sensor** even
-without `--horizon`. Both are written up, with the measurements and the
-retractions, in **[RESULTS.md](RESULTS.md)**.
+Per-crossing numbers, the exposure sweep behind `min_exposure_s`, and the
+horizon-sensor comparison are in **[RESULTS.md](RESULTS.md)**.
 
 ### Performance
 
@@ -212,7 +209,7 @@ For comparing options, use a seeded in-process experiment.
 
 ```bash
 sim_vehicle.py -v ArduPlane \
-  --add-param-file=$PWD/params/cns_sitl.parm \
+  --add-param-file=$PWD/ardupilot/params/cns_sitl.parm \
   --console --map --out=udp:127.0.0.1:14556
 ```
 
@@ -261,7 +258,7 @@ they appear to — ArduPilot keeps logging `GPS` rows with a zero fix.
 
 ```bash
 pip install pymavlink
-python3 tools/make_mission.py > missions/demo.waypoints
+python3 tools/make_mission.py > ardupilot/missions/demo.waypoints
 python3 tools/run_sitl_test.py --ardupilot ~/ardupilot
 python3 tools/run_sitl_test.py --ardupilot ~/ardupilot --horizon --speedup 20
 ```
@@ -283,13 +280,23 @@ and on failure — with each child in its own process group, because
 `sim_vehicle.py` spawns several processes and killing only the parent leaves
 ArduPlane holding the port so the next run fails.
 
-Logs land in `/tmp/sitl.log` and `/tmp/node.log`. If arming fails, the pre-arm
-message is in the first.
+Useful flags:
+
+| flag | what it does |
+|---|---|
+| `--run-name NAME` | write CSVs and node logs to `runs/<timestamp>-NAME/` instead of the repo root, so one run does not overwrite the last |
+| `--location=LAT,LON,ALT,HDG` | move SITL's home. Use the `=` form; a negative latitude looks like a flag otherwise |
+| `--utc "YYYY-MM-DDTHH:MM:SS"` | the observation epoch. The camera looks at the ZENITH, so latitude and this decide which sky is overhead — the default is mid-morning at Atlantic longitudes and would give no stars |
+| `--horizon-compare` | run TWO nodes on the same flight, one with a horizon sensor and one without. The only sound way to A/B in SITL: both see identical telemetry |
+| `--max-minutes N` | wall-clock cap, default 40 — a long crossing needs it raised |
+
+Logs land in `/tmp/sitl.log` and `/tmp/node.log`, or in the run directory under
+`--run-name`. If arming fails, the pre-arm message is in the first.
 
 ### A trajectory that demonstrates the claim
 
 ```bash
-python3 tools/make_mission.py > missions/demo.waypoints
+python3 tools/make_mission.py > ardupilot/missions/demo.waypoints
 ```
 
 96 km: a 3-turn calibration loiter, then eight 12 km legs each ending in a
@@ -299,7 +306,7 @@ python3 tools/make_mission.py > missions/demo.waypoints
 param set SIM_SPEEDUP 10          # 84 min of flight in ~8 min
 param set BATT_MONITOR 0          # no low-battery failsafe
 param set WP_LOITER_RAD 250
-wp load missions/demo.waypoints
+wp load ardupilot/missions/demo.waypoints
 mode auto
 arm throttle
 # once established, after the calibration loiter:
@@ -368,6 +375,19 @@ Measured, one revolution at 250 m, mount calibrated, 8 seeds:
 | none | 0.261 deg | 6.12 km |
 | **1x FLIR Lepton 2.5** | **0.078 deg** | **1.34 km** |
 | 2x Lepton 2.5, fore/aft | 0.058 deg | 1.23 km |
+
+Confirmed end to end in SITL, one flight with `--horizon-compare` so both arms
+see identical telemetry:
+
+| mission | orbit fix | filtered median |
+|---|---:|---:|
+| Canberra, 152 km | −29.8 % | −10.8 % |
+| Bluff → the Snares, 205 km | −12.9 % | **−41.3 %** |
+| Sagres → Porto Santo, 883 km | −33.0 % | −20.5 % |
+
+Fix quality improves ~30 % consistently. The effect on the *filtered* track
+varies with how bad the dead reckoning being corrected is — largest on the
+205 km leg, where unaided DR reached 48 % of distance flown.
 
 **A short moving average on the tilt measurement is worth 37%** and is the
 single cheapest improvement here (2.23 -> 1.34 km). The original code argued no
@@ -977,8 +997,21 @@ generator.
   simulator has no cloud sharp enough, and no real night-sky footage has been
   tested against.
 * **EKF3 behaviour under denial is specific to this SITL configuration**, whose
-  IMU noise and bias are whatever `cns_sitl.parm` sets rather than a Cube
-  Orange's. The mechanism generalises; the magnitudes do not.
+  IMU noise and bias are whatever `ardupilot/params/cns_sitl.parm` sets rather
+  than a Cube Orange's. The mechanism generalises; the magnitudes do not.
+* **The sky is modelled as permanently dark.** `sky_mag_per_arcsec2 = 21.5` is a
+  constant, with no sun and no twilight, so a flight longer than the night it
+  departs in will be given stars it could not really see. The 883 km crossing
+  runs 13.7 h and overruns its night by ~2.7 h; its night-window figures are
+  quoted separately in RESULTS.md for that reason.
+* **Small unlit targets are beyond it.** A 3.5 km uninhabited island was missed
+  by 12 km with a horizon sensor and 20 km without, after 205 km of flight. An
+  11 km island with a town on it was found with margin. Somewhere between those
+  is the limit, and it has not been mapped.
+* **Fixes are not fed back to the autopilot.** Every result here is a passive
+  estimate; ArduPilot flew on its own GNSS-denied dead reckoning throughout, and
+  over 13.7 h its own navigation drifted 18.6 km. Closing that loop
+  (`--inject`) is implemented but was not part of this campaign.
 
 ---
 

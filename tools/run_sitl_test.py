@@ -150,7 +150,7 @@ def wait_for(m, cond, timeout, what):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--ardupilot", default=os.path.expanduser("~/ardupilot"))
-    ap.add_argument("--mission", default="missions/demo.waypoints")
+    ap.add_argument("--mission", default="ardupilot/missions/demo.waypoints")
     ap.add_argument("--csv", default="live.csv")
     ap.add_argument("--frames-dir", default=None)
     ap.add_argument("--horizon", action="store_true",
@@ -255,8 +255,8 @@ def main():
         # is the whole point of an unattended test.
         cmd = [sys.executable, sim, "-v", "ArduPlane", "--no-mavproxy", "-w",
                "--speedup", str(int(a.speedup)),
-               f"--add-param-file={root}/params/cns_sitl.parm",
-               f"--add-param-file={root}/params/cns_demo.parm",
+               f"--add-param-file={root}/ardupilot/params/cns_sitl.parm",
+               f"--add-param-file={root}/ardupilot/params/cns_demo.parm",
                *(["-l", a.location] if a.location else []),
                "-A", f"--serial1=udpclient:127.0.0.1:{a.node_port}"
                      + (f" --serial2=udpclient:127.0.0.1:{a.horizon_port}"

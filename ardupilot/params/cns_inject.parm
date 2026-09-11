@@ -1,8 +1,8 @@
 # cns_inject.parm — closed-loop only. Load AFTER cns_sitl.parm.
 #
 #   sim_vehicle.py -v ArduPlane \
-#     --add-param-file=$PWD/params/cns_sitl.parm \
-#     --add-param-file=$PWD/params/cns_inject.parm ...
+#     --add-param-file=$PWD/ardupilot/params/cns_sitl.parm \
+#     --add-param-file=$PWD/ardupilot/params/cns_inject.parm ...
 #
 # Only needed when running celestial_node WITHOUT --no-inject, i.e. when the
 # aircraft is to navigate on celestial fixes. Prove the fixes are good in

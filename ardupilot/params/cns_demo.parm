@@ -1,8 +1,8 @@
 # cns_demo.parm -- settings for flying the demonstration mission.
 #
 #   sim_vehicle.py -v ArduPlane \
-#       --add-param-file=$PWD/params/cns_sitl.parm \
-#       --add-param-file=$PWD/params/cns_demo.parm \
+#       --add-param-file=$PWD/ardupilot/params/cns_sitl.parm \
+#       --add-param-file=$PWD/ardupilot/params/cns_demo.parm \
 #       --console --map --out=udp:127.0.0.1:14556
 #
 # Load this ALONGSIDE cns_sitl.parm, not instead of it. That file makes the IMU
