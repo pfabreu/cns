@@ -1,0 +1,24 @@
+# cns_inject.parm — closed-loop only. Load AFTER cns_sitl.parm.
+#
+#   sim_vehicle.py -v ArduPlane \
+#     --add-param-file=$PWD/params/cns_sitl.parm \
+#     --add-param-file=$PWD/params/cns_inject.parm ...
+#
+# Only needed when running celestial_node WITHOUT --no-inject, i.e. when the
+# aircraft is to navigate on celestial fixes. Prove the fixes are good in
+# open loop first: a 4 km fix once per orbit is nothing like a GPS stream, and
+# EKF3's gating and arming logic assume GPS-like rates and noise.
+
+# Accept GPS_INPUT (MAVLink) as a GPS source.
+GPS1_TYPE         14
+EK3_SRC1_POSXY    3
+EK3_SRC1_VELXY    0
+EK3_SRC1_POSZ     1
+
+# Relax checks that a 4 km, once-per-3-minutes fix will never satisfy.
+EK3_GPS_CHECK     0
+EK3_POSNE_M_NSE   100
+GPS_AUTO_SWITCH   0
+
+# Keep arming permissive while experimenting. Tighten before anything real.
+ARMING_CHECK      0

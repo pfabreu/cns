@@ -1,0 +1,20 @@
+{
+  "version": 3,
+  "configurePresets": [
+    { "name": "release", "displayName": "Release",
+      "binaryDir": "${sourceDir}/build",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" } },
+    { "name": "debug", "displayName": "Debug with sanitisers",
+      "binaryDir": "${sourceDir}/build-debug",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_CXX_FLAGS": "-fsanitize=address,undefined -fno-omit-frame-pointer" } }
+  ],
+  "buildPresets": [
+    { "name": "release", "configurePreset": "release" },
+    { "name": "debug", "configurePreset": "debug" }
+  ],
+  "testPresets": [
+    { "name": "release", "configurePreset": "release",
+      "output": { "outputOnFailure": true } }
+  ]
+}

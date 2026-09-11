@@ -1,0 +1,53 @@
+# cns_demo.parm -- settings for flying the demonstration mission.
+#
+#   sim_vehicle.py -v ArduPlane \
+#       --add-param-file=$PWD/params/cns_sitl.parm \
+#       --add-param-file=$PWD/params/cns_demo.parm \
+#       --console --map --out=udp:127.0.0.1:14556
+#
+# Load this ALONGSIDE cns_sitl.parm, not instead of it. That file makes the IMU
+# realistic (SITL's default is nearly ideal and would prove nothing); this one
+# just stops the simulator getting in the way of a long flight.
+#
+# Everything here is applied at boot, so no MAVProxy typing is needed. The one
+# thing that still has to be done in flight is the GNSS denial itself, since
+# EKF3 has to align with GPS before it can dead-reckon without it:
+#
+#   param set SIM_GPS1_ENABLE 0
+#   param set EK3_SRC1_POSXY 0
+#   param set EK3_SRC1_VELXY 0
+#
+# Confirm denial from EKF3's own status bits, not from GPS fix status -- see the
+# snippet in README.md. ArduPilot keeps logging GPS rows with a zero fix, so
+# message counts prove nothing.
+
+# --- time -------------------------------------------------------------------
+# The demo mission is 96 km, about 84 minutes at 25 m/s. 10x makes that 8.
+# Lower it if the autopilot starts missing its control loops.
+SIM_SPEEDUP      10
+
+# --- battery ----------------------------------------------------------------
+# Keep the monitor ENABLED and make the battery effectively infinite, rather
+# than setting BATT_MONITOR 0. Disabling the monitor leaves the arming check
+# waiting on a battery that no longer reports, which fails pre-arm with
+# "Battery 1 unhealthy" -- and the fix for that is usually ARMING_CHECK 0, which
+# also throws away the EKF and sensor checks worth keeping.
+BATT_MONITOR     4
+BATT_CAPACITY    999999
+BATT_LOW_VOLT    0
+BATT_CRT_VOLT    0
+BATT_FS_LOW_ACT  0
+BATT_FS_CRT_ACT  0
+SIM_BATT_VOLTAGE 12.6
+
+# --- flight plan ------------------------------------------------------------
+# 250 m is the measured optimum, and it is the optimum at BOTH the GPS-aided
+# (0.0009) and GNSS-denied (0.0041) turn coupling, so the choice does not depend
+# on which of those is right. 150 m gives 8.78 km, 250 m gives 7.27 km, 400 m
+# gives 8.76 km, 600 m gives 10.23 km.
+WP_LOITER_RAD    250
+
+# Log everything: analyse_log needs SIM for attitude truth and IMU for the
+# star-aided attitude experiment.
+LOG_BITMASK      65535
+LOG_DISARMED     1

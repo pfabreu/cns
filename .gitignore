@@ -67,3 +67,27 @@ vcpkg_installed/
 # test output & cache
 Testing/
 .cache/
+
+# ---------------------------------------------------------------------------
+# SITL and run output. ArduPilot's cwd is the repo root, so its dataflash lands
+# in ./logs -- a single 13 h crossing at LOG_BITMASK 65535 is ~3.5 GB.
+logs/
+*.BIN
+eeprom.bin
+mav.tlog*
+mav.parm
+
+# celestial_node CSV output, and the per-run archives written by
+# run_sitl_test.py --run-name. Keep these locally: they are the raw data behind
+# docs/images, but a crossing is ~50 MB and they are reproducible from the
+# commands recorded in each run directory.
+runs/
+*.csv
+frames/
+*.pgm
+
+# NOTE: docs/images/ is deliberately NOT ignored -- README.md and RESULTS.md
+# reference those PNGs directly.
+
+# ArduPilot SITL terrain cache, created empty in the repo root at run time.
+terrain/

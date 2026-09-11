@@ -1,0 +1,136 @@
+# cns_sitl.parm — realistic sensor error for celestial navigation testing.
+#
+#   sim_vehicle.py -v ArduPlane --add-param-file=$PWD/params/cns_sitl.parm \
+#                  --console --map --out=udp:127.0.0.1:14556
+#
+# WHY THIS FILE EXISTS
+# SITL's default IMU is nearly ideal. EKF3 will hold attitude far better than a
+# Cube Orange ever does in a vibrating airframe, the celestial fix will look
+# excellent, and the run will have proved nothing. Accelerometer bias is the
+# term that matters: it maps to tilt as bias/g, and tilt maps to position at
+# ~111 km/deg. 0.05 m/s/s is ~5 mg, i.e. ~0.29 deg, i.e. ~32 km if uncorrected.
+#
+# Sweep SIM_ACC1_BIAS_X/Y and check the position error scales as predicted.
+# That is the closure test between the analytic model and SITL.
+
+# --- accelerometer: THE dominant term for the local vertical ---------------
+SIM_ACC1_BIAS_X   0.05
+SIM_ACC1_BIAS_Y   0.05
+SIM_ACC1_BIAS_Z   0.02
+SIM_ACC1_RND      0.5
+SIM_ACC1_SCAL_X   1.001
+SIM_ACC1_SCAL_Y   1.001
+
+# --- gyros: drive attitude drift between accelerometer corrections ---------
+SIM_GYR1_RND      0.5
+SIM_GYR1_SCALE    0.01
+SIM_GYR1_BIAS_X   0.005
+SIM_GYR1_BIAS_Y   0.005
+
+# --- vibration: the real reason a Cube Orange does worse than its datasheet
+# Coning and sculling errors from vibration are what turn a 100 ug datasheet
+# bias into the 0.2-0.3 deg of wander seen in the paper's Figure 5.
+SIM_VIB_FREQ      30
+SIM_VIB_MOT_MAX   350
+SIM_VIB_MOT_MULT  1.0
+
+# --- magnetometer: yaw only, but bad yaw degrades pitch/roll through the EKF
+SIM_MAG1_OFS_X    20
+SIM_MAG1_OFS_Y   -15
+SIM_MAG1_OFS_Z    10
+
+# --- wind: reproduces the Section 4.4 mechanism -----------------------------
+# Holding a fixed GROUND radius in wind makes the autopilot vary bank to suit,
+# which modulates attitude at the orbit frequency AND samples heading
+# non-uniformly in time. That is what biases the naive mean of Eq. (23).
+# 8 m/s = 29 km/h. Use 15 for the paper's 54 km/h case.
+SIM_WIND_SPD      8
+SIM_WIND_DIR      180
+
+# TURBULENCE IS OFF ON PURPOSE.
+#
+# SIM_WIND_TURB drives airframe roll and pitch oscillation at around 1 Hz.
+# Those are REAL attitude excursions, not gyro noise, so they smear the star
+# image: +/-10 deg/s over a 100 ms exposure is 1 deg, or 34 px at 107
+# arcsec/px. Measured effect of TURB 3: detections drop from ~20 per frame to
+# ~3, and no useful fix is possible.
+#
+# Turning it off is a scope choice, not a cheat: the demonstration is of a
+# navigation system, not of airframe turbulence response. State it rather than
+# hide it. Set 1 for mild, 3 for the previous behaviour -- and expect to need a
+# shorter exposure, which costs photons. That bind has no software answer; it
+# wants a faster lens or a more sensitive sensor than the 6 mm f/1.4 modelled
+# here.
+SIM_WIND_TURB     0
+
+# --- flight plan -----------------------------------------------------------
+# A wide loiter keeps the turn rate low, which keeps motion blur low. At 25 m/s
+# a 400 m radius gives ~3.6 deg/s, i.e. ~2.4 px of smear at a 20 ms exposure or
+# ~12 px at 100 ms. A tight loiter at 15-20 deg/s smears the stars into 50+ px
+# streaks and detection collapses.
+WP_LOITER_RAD     400
+
+# Bound the turn rate. A commanded turn -- clicking a waypoint on the map, or a
+# mode change -- otherwise rolls to LIM_ROLL_CD (default 65 deg) and produces
+# 10+ deg/s, which at a 100 ms exposure is ~37 px of smear. Detections collapse
+# and the fix built from that window is worthless.
+#
+#   turn rate = g * tan(bank) / airspeed
+#   20 deg bank at 25 m/s -> 8.3 deg/s -> 28 px at 100 ms
+#   15 deg bank at 25 m/s -> 6.0 deg/s -> 20 px
+LIM_ROLL_CD       1800
+
+# Gentler navigation: a longer L1 period means less aggressive intercepts, so
+# a waypoint command does not produce a step input in roll.
+NAVL1_PERIOD      25
+
+# --- barometer / airspeed: feed TAS and the horizon dip calculation ---------
+SIM_BARO_RND      0.1
+SIM_ARSPD_RND     0.5
+SIM_ARSPD_OFS     2013
+
+# --- EKF3, GPS-denied friendly ---------------------------------------------
+AHRS_EKF_TYPE     3
+EK3_ENABLE        1
+# Fixed-wing synthetic sideslip fusion: in coordinated flight the lateral
+# specific force is zero by definition, so any non-zero f_y is accelerometer
+# y-bias. Free aero-model aiding with no aero model. Leave this ON.
+EK3_BETA_MASK     0
+
+# Log at a useful rate; analyse_log needs ATT and SIM.
+LOG_BITMASK       65535
+LOG_DISARMED      0
+
+# --- streams the celestial node needs --------------------------------------
+# The node requests these via SET_MESSAGE_INTERVAL, but some builds ignore it.
+# SR1 is the first serial/UDP output, SR2 the second; set both.
+# --- stream rates: NOT SETTABLE HERE ---------------------------------------
+#
+# Two separate reasons, both worth knowing:
+#
+# 1. SIMSTATE is not a member of any stream for ArduPlane -- the only reference
+#    in the source is the SET_MESSAGE_INTERVAL lookup table. celestial_node
+#    requests it directly and re-requests if the observed rate is low.
+#    (SR0_/SR1_ no longer exist either; the stream rates moved to the MAV
+#    group, e.g. MAV1_EXTRA1.)
+#
+# 2. MAVProxy periodically re-sends REQUEST_DATA_STREAM at its own configured
+#    streamrate, default 4 Hz, which OVERRIDES whatever the node requested.
+#    That is a MAVProxy console setting, not a vehicle parameter, so it cannot
+#    live in this file. In the MAVProxy console:
+#
+#        set streamrate 20
+#        set streamrate2 20
+#
+#    or launch with sim_vehicle.py --streamrate=20
+#
+#    Symptom if you forget: BOTH streams pinned at exactly the same low rate.
+#
+# NOTE: there is deliberately no stream-rate parameter for SIMSTATE here.
+# SIMSTATE is not a member of any stream for ArduPlane -- the only reference in
+# the source is the SET_MESSAGE_INTERVAL lookup table. celestial_node requests
+# it directly with MAV_CMD_SET_MESSAGE_INTERVAL and re-requests if the observed
+# rate is low. SR0_/SR1_/MAV1_ parameters will NOT raise it.
+#
+# ATTITUDE and GLOBAL_POSITION_INT are also requested by the node, so nothing
+# is needed here for them either.
