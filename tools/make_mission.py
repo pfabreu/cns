@@ -52,7 +52,11 @@ def main():
     ap.add_argument("--legs", type=int, default=8)
     ap.add_argument("--leg-km", type=float, default=12.0)
     ap.add_argument("--radius", type=float, default=250.0)
-    ap.add_argument("--turns", type=int, default=2)
+    # 3, not 2. The fix orbit has to be long enough to average several drift
+    # realisations, and transit_scenario measured 2 revs at 13.3 km per fix
+    # against 8.5 km at 4 -- yet every mission generated here flew 2. The price
+    # is ~63 s more loitering per fix at a 250 m radius.
+    ap.add_argument("--turns", type=int, default=3)
     ap.add_argument("--calib-turns", type=int, default=3)
     ap.add_argument("--track", type=float, default=190.0,
                     help="degrees; legs fan by --fan to vary heading")

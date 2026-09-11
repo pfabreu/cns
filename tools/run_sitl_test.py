@@ -22,6 +22,7 @@ ArduPlane running and the next run fails on a bound port.
 
 import argparse
 import os
+import shlex
 import signal
 import subprocess
 import sys
@@ -64,12 +65,13 @@ class Child:
         print(f"  stopped {self.name}")
 
 
-# Options whose VALUE can legitimately start with "-".
-_NEG_VALUE_OPTS = {"--location"}
+# Options whose VALUE can legitimately start with "-": a negative latitude, or
+# a string of arguments meant for a child process.
+_NEG_VALUE_OPTS = {"--location", "--node-args", "--horizon-node-args"}
 
 
 def joinNegativeValues(argv):
-    """Rewrite `--location -46.6,...` to `--location=-46.6,...`.
+    """Rewrite `--opt -value` to `--opt=-value` for the options listed above.
 
     argparse cannot tell a value beginning with "-" from another option unless
     the value parses as a plain negative number, and "lat,lon,alt,heading" does
@@ -169,6 +171,12 @@ def main():
                     help="override the HORIZON node's full-sweep fix sigma, m. "
                          "Set it to the accuracy the horizon actually delivers "
                          "rather than the accuracy it is assumed to.")
+    ap.add_argument("--node-args", default="",
+                    help="extra arguments passed verbatim to the FIRST node, "
+                         "e.g. \"--horizon\". Lets both arms of "
+                         "--horizon-compare differ in one variable only")
+    ap.add_argument("--horizon-node-args", default="",
+                    help="extra arguments for the SECOND node")
     ap.add_argument("--run-name", default=None,
                     help="write this run's CSVs and node logs to "
                          "runs/<timestamp>-<name>/ instead of the repo root. "
@@ -290,6 +298,7 @@ def main():
             ncmd += ["--utc", a.utc]
         if a.fix_sigma > 0:
             ncmd += ["--fix-sigma", str(a.fix_sigma)]
+        ncmd += shlex.split(a.node_args)
         if a.horizon:
             ncmd.append("--horizon")
         if a.frames_dir:
@@ -310,6 +319,7 @@ def main():
                 hcmd += ["--utc", a.utc]
             if a.horizon_fix_sigma > 0:
                 hcmd += ["--fix-sigma", str(a.horizon_fix_sigma)]
+            hcmd += shlex.split(a.horizon_node_args)
             hlog = (os.path.join(run_dir, "node_horizon.log") if run_dir
                     else "/tmp/node_h.log")
             kids.append(Child("celestial_node+horizon", hcmd, hlog))

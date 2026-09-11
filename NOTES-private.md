@@ -1522,3 +1522,59 @@ a triumph should be recomputed a second way before it is said out loud.
 * **The sky model does not brighten.** `sky_mag_per_arcsec2 = 21.5` is fixed, so
   any flight longer than the night it starts in gets stars it should not have.
   The Porto Santo crossing ran 2.7 h past astronomical dawn.
+
+## Temporal filtering of the tilt measurement: the dead end is general
+
+Implemented, swept, removed. The existing entry said averaging the horizon tilt
+past ~3 s helps tilt and hurts the fix. The obvious objection is that a moving
+average is a crude smoother and a proper filter would not lag. It was worth
+testing because the objection is reasonable. It is also wrong.
+
+`fuseTiltFiltered()` kept the tilt estimate between frames under Gauss-Markov
+dynamics instead of resetting the prior each frame:
+
+    predict   x <- f x,  P <- f^2 P + sigma^2 (1 - f^2),   f = exp(-dt/tau)
+    update    linear-Gaussian against the horizon measurement
+
+Swept in `transit_scenario --horizon lepton`, 40 seeds per tau, deterministic,
+320 runs:
+
+| tau | tilt arcmin | orbit fix km | DR + fixes km |
+|---|---|---|---|
+| off | 8.40 | **4.08** | 8.63 |
+| 5 s | 8.10 | 4.75 | 8.69 |
+| 20 s | 7.61 | 4.90 | 8.67 |
+| 80 s | 6.95 | 5.09 | 8.56 |
+| 160 s | **6.65** | **5.22** | 8.47 |
+
+Tilt improves monotonically, 8.40 -> 6.65 arcmin at 35.6 sigma. The fix degrades
+monotonically, 4.08 -> 5.22 km. Navigation is unchanged, 0.6 sigma. Exactly the
+shape of the original finding, from a different smoother.
+
+**Why the "a Kalman filter predicts rather than lags" argument fails.** The
+prediction step is `x <- exp(-dt/tau) x`, which decays toward ZERO. It does not
+follow where the tilt error is actually going. Following it would require
+predicting the AHRS's own error, and that error IS the unmodelled part of the
+gyro -- unpredictable by construction. So a longer tau is simply more smoothing,
+and more smoothing is more lag, identically to a boxcar. The estimator is not
+the issue; there is no information with which to predict.
+
+**Why the lag specifically ruins the fix.** The lag is heading-correlated: the
+aircraft is turning while the estimate trails, so the tilt error the fix sees is
+a function of heading. Heading-correlated error is the one class the orbit
+CANNOT average away -- that is what the orbit exists to remove and it removes
+only the body-fixed part. So smoothing converts a random error the orbit would
+have cancelled into a structured one it cannot.
+
+This also explains a confusing intermediate result. In SITL the same filter
+improved the PER-FRAME fix by 11.4 % while leaving the orbit fix flat: the noise
+really does average down frame to frame, and the lag it introduces survives the
+orbit average. Better frames, worse fix, no net change.
+
+**The generalised statement, which is stronger than the original entry:** no
+temporal smoothing of the tilt measurement can help, whatever the smoother,
+because the lag it necessarily introduces lands in the error class the heading
+sweep cannot remove. Do not revisit this with a better filter. Revisit it only
+with a sensor whose per-frame noise is lower -- a higher-resolution horizon core
+reduces the error without introducing lag at all, and section 3 of RESULTS.md
+shows the Boson 640 doing exactly that.
