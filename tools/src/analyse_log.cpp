@@ -38,7 +38,7 @@
 // ---------------------------------------------------------------------------
 namespace celestial {
 
-/// One resampled row from an ArduPilot log. Produced by tools/dump_log.py.
+/// One resampled row from an ArduPilot log. Produced by tools/sitl/dump_log.py.
 struct LogRow {
   double t = 0.0;  ///< seconds since the first row
   Geodetic pos_true;
@@ -58,7 +58,7 @@ struct LogRow {
   }
 };
 
-/// Load the CSV emitted by tools/dump_log.py. Angles in the file are degrees;
+/// Load the CSV emitted by tools/sitl/dump_log.py. Angles in the file are degrees;
 /// they are converted to radians here.
 std::vector<LogRow> loadLogCsv(const std::string& path);
 

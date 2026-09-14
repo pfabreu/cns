@@ -91,3 +91,12 @@ frames/
 
 # ArduPilot SITL terrain cache, created empty in the repo root at run time.
 terrain/
+build/
+CLAUDE.md
+NOTES-private.md
+.venv/
+data/
+# python bytecode from scripts/
+__pycache__/
+*.pyc
+logs/

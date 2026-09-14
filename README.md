@@ -1,141 +1,245 @@
-# Celestial navigation for a GNSS-denied fixed-wing UAV
+# Celestial Navigation System
 
-A strapdown star camera and air-data dead reckoning, fused to bound absolute
-position error indefinitely without emitting anything. One camera, no vertical
-reference, no extra sensors.
+Inspired by the SR-71 ANS this is a Ardupilot SITL proof-of-concept celestial navigation system for fixed-wing GNSS-denied flying for flying over places with no visual features like the ocean.
 
-Built on Teague & Chahl, *"An Algorithm for Affordable Vision-Based GNSS-Denied
-Strapdown Celestial Navigation"*, Drones 2024, 8(11) 652 — reproduced, then
-corrected and extended in four measurable ways, and validated against a real
-ArduPilot EKF3 in SITL rather than only in simulation.
+A strapdown star camera and air-data dead reckoning, fused to bound absolute position error indefinitely without emitting anything. One camera, no vertical reference, no extra sensors.
 
-This is a **navigation and simulation library**. It implements the estimator,
-the star pipeline and the sensor fusion end to end, and exercises them in a
-repeatable simulation, against a MAVLink replayer, and against ArduPilot SITL.
-Hardware, daytime operation, sun/moon sighting and the polarisation compass are
-deliberately out of scope.
+This is a **navigation and simulation library**, hardware out of scope. It implements the estimator, the star pipeline and the sensor fusion end to end, and exercises them in a repeatable simulation, against a MAVLink replayer, and against ArduPilot SITL.
+
 
 ---
 
 ## Contents
 
-- [Results](#results)
+- [How it works](#how-it-works)
 - [Build and test](#build-and-test)
 - [Running it](#running-it)
-- [How it works](#how-it-works)
-- [The algorithms](#the-algorithms)
-- [Sensor models](#sensor-models)
+- [Results](#results)
 - [Validation against ArduPilot SITL](#validation-against-ardupilot-sitl)
-- [What this adds to the paper](#what-this-adds-to-the-paper)
-- [Optional extras](#optional-extras)
-- [Known limitations](#known-limitations)
+- [Known limitations and next steps](#known-limitations-and-next-steps)
 - [References](#references)
 
 ---
 
-## Results
+## How it works
 
-Two numbers matter, and they answer different questions.
-
-### 1. Does the paper's method reproduce?
-
-```bash
-./build/test_orbit          # testPaperReplication
+```
+                        +------------- ORBIT (360 deg of heading) ----------+
+                        |  body-fixed error traces a circle and averages out |
+                        +------------------------+---------------------------+
+                                                 |
+ star camera -> detect -> centroid -> match --+-> per-frame fix -> AVERAGE --+
+                                              |   (~43 km)                   |
+ IMU / EKF3 attitude -------------------------+                              |
+   (the ONLY vertical reference)              |                              v
+                                              |                      absolute fix
+                                              |                        (~4 km)
+                                              |                              |
+                                              +-> Kabsch --+-> mounting -----+
+                                                           |  (calibrate     |
+                                                           |   ONCE, low bank)
+                                                           |                 v
+                                                           +-> heading -> dead reckoning -> trajectory
+                                                              (celestial        ^    |
+                                                               compass)         |    |
+ airspeed + wind ---------------------------------------------------------------+    |
+                                                           +---- dr_ne ------------- +
+                                                    (displacement only, not a dependency)
 ```
 
-Teague & Chahl report **4 km** from one orbit through 360° of compass heading,
-on real flight data with a Cube Orange AHRS. Reproduced here with the same class
-of error — 0.4° uncalibrated mounting, AHRS tilt bias, drift at the rate their
-own Figure 5 measures, maneuver coupling, 5 m/s wind, six seeds:
+Three things to read off it.
 
-| orbit | period | mean error |
-|---|---|---|
-| 150 m radius, 1 rev | 38 s | **4.14 km** |
-| 400 m radius, 1 rev | 100 s | 8.80 km |
-| 150 m radius, 4 rev | 151 s | **1.96 km** |
+**The orbit is the estimator, not a flight-planning detail.** Without a heading
+sweep the AHRS tilt error passes straight through and a fix is worth ~43 km.
 
-A single frame under the same conditions is 43 km, so the orbit buys a factor of
-ten.
+**The same Kabsch rotation yields three products** — the position fix, the
+mounting calibration and the heading — which is why the celestial compass costs
+almost nothing to add.
 
-**The radius is the finding.** A body-fixed error averages away over a heading
-sweep; AHRS drift is not body-fixed, so it only averages as `sqrt(2*tau/T)` —
-which makes the orbit **period** a design variable. The paper reports 4 km and
-never reports a radius; on this model that number needs an orbit short against
-the drift correlation time.
+**Mounting and heading split off before the average**, because they are
+per-frame quantities while the fix is not.
 
-### 2. Can it navigate a transit?
+### Code layout
 
-```bash
-./build/transit_scenario
-```
-
-192 km over water, GNSS-denied: a calibrating loiter at departure, then legs
-separated by fix orbits. The paper stops at a single fix; this adds dead
-reckoning between fixes, a celestial compass for heading, and the estimator
-corrections below.
-
-| quantity | result |
+| module | job |
 |---|---|
-| camera boresight, self-calibrated in flight | 0.40 deg -> **0.11 deg** |
-| heading, against a 3 deg magnetometer bias | residual **0.10 deg** |
-| celestial fixes | 10 over 192 km |
-| dead reckoning ALONE | mean 29 km, peak **58 km** (30% of distance) |
-| dead reckoning + fixes | mean **7.3 km**, bounded |
+| `types` | `Geodetic`, `Epoch`, units, haversine. **Frame conventions live here** |
+| `star_catalog` | Hipparcos subset, proper motion, magnitudes, common names |
+| `sky_model` | RA/Dec to ECEF/NED, refraction, sub-stellar points, **and the position solver** (least squares + RANSAC) — the solver operates on the `StarSight` values this module defines |
+| `attitude` | DCM/Euler, `kabsch`, `averageRotation`, **and `StarAidedAttitude`**, the gyro-bias MEKF built from those helpers |
+| `imaging` | render, detect, centroid, match; matched filter; mesh background |
+| `orbit` | the estimator: orbit fix, mount calibration, compass, simulators |
+| `deadreckon` | 4-state air-data filter (N, E, wind_N, wind_E) |
+| `prior_net` | optional: ONNX detection prior via `cv::dnn` |
 
-Seed spread is 6.1–8.5 km; quote a sweep, not a run. `--seed N` is provided.
+Tools: `pipeline` (nav logic, no MAVLink), `celestial_node` (live UDP node),
+`fake_sitl` (replayer), `analyse_log`, `visualise`, `bench`, `gen_dataset`.
 
-**A fix is an orbit.** With no vertical reference a straight-leg fix carries the
-whole AHRS tilt error and is worth about 40 km, so the aircraft must maneuver to
-navigate. That is the paper's method and it is the operating mode here. The
-transit number is dominated by dead reckoning between orbits, not fix quality:
-orbit more often and it improves.
+**The celestial core is independent of dead reckoning.** `deadreckon` consumes
+fixes; nothing in the core includes it. Delete it and the fix still works.
 
-### 3. Can it cross an ocean and find an island?
+### The algorithms
 
-Full SITL, GNSS denied 240 s after takeoff, celestial fixes NOT fed back to the
-autopilot — the navigation estimate is a passive observer while ArduPilot flies
-the mission on its own dead reckoning.
+**Position solve** — plane-intersection weighted least squares, SVD-solved (the
+paper's Eq. 7–10): each star gives a plane through Earth's centre and the zenith
+is where they intersect. Wrapped in RANSAC with a 3-star minimal set (the
+paper's Algorithm 1), residuals normalised by `sin(zenith)` so the tolerance
+means an angle, and deterministic via a fixed seed.
 
-![Sagres to Porto Santo](docs/images/portosanto-map-dr.png)
+**Attitude** — Kabsch/Wahba SVD for the camera-to-NED rotation from matched
+pairs; chordal rotation averaging for combining per-frame mount estimates.
 
-883 km, Sagres to Porto Santo, one night in December. Unaided dead reckoning
-(red) ends **346 km** out, in open Atlantic. The aided tracks stay on truth.
+**Orbit averaging**, three variants — naive mean of zenith vectors (Eq. 23),
+heading-weighted mean, and small-circle fit whose axis is the position and whose
+angular radius is the misalignment.
 
-| crossing | flown | unaided DR | aided, median | aided, p90 |
-|---|---:|---:|---:|---:|
-| Canberra demo | 154 km | 56 km | 6.1 km | 15.2 km |
-| Bluff → the Snares | 262 km | 98 km | 8.2 km | 17.4 km |
-| Sagres → Porto Santo | 883 km | 346 km | 6.9 km | 24.7 km |
+**Star pipeline** — median + MAD robust thresholding, connected-component
+labelling, Gaussian-fit centroiding (5-parameter Gauss-Newton, verified against
+the Cramer-Rao bound), nearest-neighbour matching with a 2x ambiguity guard.
+Optional matched filter and SExtractor-style mesh background, below.
 
-**Bounded against unbounded is the whole claim**, and it holds at every scale
-tested: unaided error grows to 30–48 % of distance flown, the aided estimate
-does not grow at all.
+**Sky model** — ERFA precession/nutation/sidereal time, proper motion, Bennett
+and Saemundsson refraction with elevation-dependent weighting.
 
-Whether that is *enough* depends on the target:
+**Dead reckoning** — 4-state Kalman filter, air-data driven, with a wind random
+walk that absorbs systematic airspeed and heading error.
 
-* **Porto Santo** — 11 km long, a town, lights visible ~50 km. Found with
-  margin, with or without a horizon sensor.
-* **The Snares** — 3.5 km, uninhabited, unlit. **Missed** by both
-  configurations (12 km and 20 km at the final fix). This is where the system
-  as configured runs out.
+#### Matched filter: use the gyro instead of learning the streak
 
-Per-crossing numbers, the exposure sweep behind `min_exposure_s`, and the
-horizon-sensor comparison are in **[RESULTS.md](RESULTS.md)**.
+A star under motion blur is a streak of **known** shape — the AHRS gives the
+body rate, so direction and length are predictable per pixel, and the optimal
+linear detector for a known signal in Gaussian noise is a matched filter.
+Matched stars per frame, which is the figure that feeds the fix:
 
-### Performance
+| exposure | smear | plain | matched filter |
+|---|---|---|---|
+| 20 ms | 4.8 px | 4.2 | **11.8** |
+| 50 ms | 12.1 px | 9.2 | **46.8** |
+| 100 ms | 24.2 px | 13.8 | **53.8** |
+| 200 ms | 48.3 px | 28.4 | **76.0** |
 
-```bash
-./build/bench
-```
+Two subtleties. The smear is **not uniform**: in an orbit the dominant rate is
+about the boresight, which rotates the field rather than translating it, so the
+rotational optical flow is evaluated per pixel. And the filter runs on a
+**decimated** image, with the factor chosen per frame to keep the decimated
+smear above 8 px — that took it from 312 ms to 24.8 ms with no measurable
+accuracy cost. Centroiding is always at full resolution.
 
-| stage | per frame | max rate |
+#### Mesh background
+
+A SExtractor-style background: sigma-clipped estimate per 64 px cell,
+median-filtered across nodes, bilinearly interpolated, subtracted
+(`DetectorConfig::bg_mesh_px`, off by default).
+
+| condition | plain | mesh | gain |
+|---|---|---|---|
+| clear | 38.3 | 36.8 | 0.96x |
+| cloud 0.6 | 25.8 | 26.2 | 1.01x |
+| flare 0.5 | 19.3 | 34.0 | **1.76x** |
+
+Note *which* contaminant it fixes. Lens flare is a steep additive gradient and
+the mesh recovers nearly all of it. Cloud it does not help with at all, because
+cloud's damage is not threshold bias: it attenuates starlight and its glow
+raises the **shot noise** floor. Subtracting a background cannot un-add Poisson
+noise or recover photons that never arrived.
+
+### Sensor models
+
+Everything the simulator injects, and where the numbers come from.
+
+| term | value | source |
 |---|---|---|
-| detect, plain | 5.9 ms | 169 Hz |
-| detect, matched filter | 24.8 ms | 40 Hz |
-| match to catalogue | 0.10 ms | 10070 Hz |
-| per-frame fix (RANSAC) | 1.24 ms | 806 Hz |
+| camera | 1936x1216, 53.5 deg FOV, 10 Hz | the paper's Alvium 1800 U-240 |
+| boresight error | 0.4 deg, uncalibrated at departure | assumed |
+| AHRS tilt bias | 0.25 / 0.15 deg | assumed |
+| AHRS tilt drift | 0.15 deg, tau = 60 s | the paper's Figure 5 |
+| maneuver coupling | 0.0041 | **measured in SITL, GNSS-denied** |
+| centroid noise | 10 arcsec | assumed |
+| wind | 5 m/s | the paper's flight conditions |
 
-The whole flight path fits a 10 Hz camera with 4x margin.
+**Maneuver coupling** deserves a note. An accelerometer senses specific force,
+so in a coordinated turn its vertical is pulled toward the aircraft's own down
+axis and the AHRS under-reads the bank. `ErrorModel::ahrs_turn_coupling` is the
+fraction that survives EKF3's compensation. Measured: **0.0009 GPS-aided,
+0.0041 denied** — denial costs 4.6x, because centripetal compensation needs
+velocity and airspeed is a poorer substitute than GPS. It is not linear
+(~0.002 at 10–15 deg of bank, ~0.007 at 25 deg), the denied fit only reached
+25 deg, and the top bin dominates it — treat 0.004 as the middle of a
+0.0015–0.007 range.
+
+The **orbit radius** is a genuine trade-off. A fix wants a short period, because
+drift only averages out if the orbit is quick against its correlation time; a
+calibration wants low bank, because maneuver coupling puts a bank-proportional
+tilt into the AHRS that `recalibrateMount` books into the mounting. At the
+measured coupling: 150 m gives 8.78 km, **250 m gives 7.27 km**, 400 m gives
+8.76 km, 600 m gives 10.23 km. 250 m is the optimum at both the aided and denied
+coupling, so the choice is not sensitive to which is right.
+
+### What this adds to the paper
+
+**1. Orbit period is a design variable.** The paper reports 4 km and never a
+radius. The averaging only removes body-fixed error, and AHRS drift is not
+body-fixed, so it averages as `sqrt(2*tau/T)`. 150 m gives 4.14 km, 400 m gives
+8.80 km, everything else equal. Their own Figure 5 supplies the drift rate, so
+this follows from their data.
+
+**2. Their conclusion about GPS is an estimator artefact.** They observe 18.27
+km for a GPS-guided orbit against 2.29 km flying fixed attitude and conclude GPS
+guidance is harmful. It is Eq. (23): an arithmetic mean assumes uniform sampling
+in heading, and a GPS-guided track in wind does not provide it. Weighting by
+heading increment gives 4.03 -> **0.11 km** with no change to the flight plan.
+Caveat: that win is masked once realistic AHRS drift is modelled (6.94 -> 5.86
+km) — it fixes a sampling bias, and drift dominates. Both bounds are asserted in
+`testHeadingWeightedMean`.
+
+**3. Navigation, not just a fix.** The paper stops at one orbit. This adds dead
+reckoning between fixes, a celestial compass recovering a 3 deg magnetometer
+bias to 0.10 deg from the same Kabsch rotation, and the fusion that bounds error
+over a 192 km transit at 7.3 km against 29 km unaided.
+
+**4. Calibrate once, at low bank.** Maneuver coupling puts a bank-proportional
+tilt into the AHRS which `recalibrateMount` books into the mounting.
+Recalibrating at every fix orbit made the boresight wander between 0.11 and
+0.46 deg. The mounting is a bracket; estimate it once, where the bank is lowest.
+
+Also: the star pipeline uses Gaussian-fit centroiding rather than the paper's
+3x3 centre-of-gravity window, which is 7–10x better and reaches the Cramer-Rao
+bound; and the detector adds a gyro-informed matched filter, where the paper's
+successor reaches for a neural network instead.
+
+### Optional extras
+
+Both off by default, both tested in their absent state.
+
+**Star-aided attitude** (`attitude.hpp`, and `analyse_log --star-aided`) — a 6-state multiplicative EKF
+estimating gyro bias from absolute star attitude. Star directions in ECEF do not
+depend on position, so the *sequence* of star attitudes observes gyro bias even
+though a single fix cannot separate tilt from position. Verified in simulation
+only: unaided attitude drifts to 0.146 deg peak over 302 s, aided holds 0.042
+deg.
+
+Now also runnable on a real log — `dump_log.py` carries the gyro and
+`analyse_log --star-aided` recomputes the fix with the corrected attitude.
+Measured, it improves the ATTITUDE by 2.4x (0.95 -> 0.40 deg) and leaves the FIX
+essentially unchanged, because converting the star attitude from ECEF to NED
+needs a position and an error there enters as a constant NED rotation that the
+orbit cannot average away. See NOTES-private.md.
+
+**Learned detection prior** (`prior_net.hpp`) — an ONNX model run through
+`cv::dnn`, producing a **prior** rather than a decision. It lowers the detection
+threshold between `threshold_k` and `threshold_k_low`; the detection still has
+to clear a real significance floor from actual photons, and the centroid is
+always measured on the original image. So it **cannot hallucinate** a star
+(confidence over empty sky yields nothing) and **cannot delete** one (a zero
+prior leaves the nominal threshold untouched). `testPriorIsBounded` asserts the
+exact equivalence: prior = 1 everywhere is identical to hand-setting the low
+threshold, prior = 0 is identical to the ordinary detector. The worst an
+adversarial model can do is move you to an operating point you could have chosen
+yourself.
+
+7.3 ms at 1/4 resolution, warmed up at load so the first frame does not pay the
+165 ms lazy-init cost. `scripts/` has the training stub and the dataset
+generator.
 
 ---
 
@@ -258,9 +362,9 @@ they appear to — ArduPilot keeps logging `GPS` rows with a zero fix.
 
 ```bash
 pip install pymavlink
-python3 tools/make_mission.py > ardupilot/missions/demo.waypoints
-python3 tools/run_sitl_test.py --ardupilot ~/ardupilot
-python3 tools/run_sitl_test.py --ardupilot ~/ardupilot --horizon --speedup 20
+python3 tools/sitl/make_mission.py > ardupilot/missions/demo.waypoints
+python3 tools/sitl/run_sitl_test.py --ardupilot ~/ardupilot
+python3 tools/sitl/run_sitl_test.py --ardupilot ~/ardupilot --horizon --speedup 20
 ```
 
 Starts SITL and `celestial_node`, uploads the mission, arms, flies AUTO, denies
@@ -268,8 +372,8 @@ GNSS at `--deny-after` seconds, runs to the end or `--max-minutes`, kills
 everything and prints a summary. Then:
 
 ```bash
-python3 tools/live_view.py --csv live.csv          # trajectories
-python3 tools/dump_log.py logs/00000001.BIN > flight.csv
+python3 tools/plot/live_view.py --csv live.csv          # trajectories
+python3 tools/sitl/dump_log.py logs/00000001.BIN > flight.csv
 ./build/analyse_log flight.csv                     # the real analysis
 ```
 
@@ -296,7 +400,7 @@ Logs land in `/tmp/sitl.log` and `/tmp/node.log`, or in the run directory under
 ### A trajectory that demonstrates the claim
 
 ```bash
-python3 tools/make_mission.py > ardupilot/missions/demo.waypoints
+python3 tools/sitl/make_mission.py > ardupilot/missions/demo.waypoints
 ```
 
 96 km: a 3-turn calibration loiter, then eight 12 km legs each ending in a
@@ -336,7 +440,7 @@ estimated **once** there and everything downstream inherits it. The legs fan by
 ### Log analysis
 
 ```bash
-python3 tools/dump_log.py logs/00000001.BIN > flight.csv
+python3 tools/sitl/dump_log.py logs/00000001.BIN > flight.csv
 ./build/analyse_log flight.csv
 ./build/analyse_log flight.csv --imaging     # add the real star pipeline
 ```
@@ -359,7 +463,7 @@ most.
 # A/B it deterministically -- run the scenario twice and overlay the tracks
 ./build/transit_scenario --seed 1 --csv plain.csv
 ./build/transit_scenario --seed 1 --horizon lepton --csv horizon.csv
-python3 tools/live_view.py --csv plain.csv --compare horizon.csv \
+python3 tools/plot/live_view.py --csv plain.csv --compare horizon.csv \
     --label "no horizon" --compare-label "1x Lepton"
 ```
 
@@ -677,7 +781,7 @@ left, and what the camera saw with the matcher's verdict on the right.
 ./build/celestial_node --port 14556 --no-inject \
     --csv live.csv --frames-dir frames --frames-every 20 &
 ./build/fake_sitl --port 14556 --speed 25        # or ArduPilot SITL
-python3 tools/live_view.py --csv live.csv --frames frames
+python3 tools/plot/live_view.py --csv live.csv --frames frames
 ```
 
 The **left** pane draws four things and the distinction is the point: truth, the
@@ -711,163 +815,128 @@ dumping every frame is 47 MB/s. Needs matplotlib, which nothing else here does.
 
 ---
 
-## How it works
+## Results
 
-```
-                        +------------- ORBIT (360 deg of heading) ----------+
-                        |  body-fixed error traces a circle and averages out |
-                        +------------------------+---------------------------+
-                                                 |
- star camera -> detect -> centroid -> match --+-> per-frame fix -> AVERAGE --+
-                                              |   (~43 km)                   |
- IMU / EKF3 attitude -------------------------+                              |
-   (the ONLY vertical reference)              |                              v
-                                              |                      absolute fix
-                                              |                        (~4 km)
-                                              |                              |
-                                              +-> Kabsch --+-> mounting -----+
-                                                           |  (calibrate     |
-                                                           |   ONCE, low bank)
-                                                           |                 v
-                                                           +-> heading -> dead reckoning -> trajectory
-                                                              (celestial        ^    |
-                                                               compass)         |    |
- airspeed + wind ---------------------------------------------------------------+    |
-                                                           +---- dr_ne ------------- +
-                                                    (displacement only, not a dependency)
+Two numbers matter, and they answer different questions.
+
+### 1. Does the paper's method reproduce?
+
+```bash
+./build/test_orbit          # testPaperReplication
 ```
 
-Three things to read off it.
+Teague & Chahl report **4 km** from one orbit through 360° of compass heading,
+on real flight data with a Cube Orange AHRS. Reproduced here with the same class
+of error — 0.4° uncalibrated mounting, AHRS tilt bias, drift at the rate their
+own Figure 5 measures, maneuver coupling, 5 m/s wind, six seeds:
 
-**The orbit is the estimator, not a flight-planning detail.** Without a heading
-sweep the AHRS tilt error passes straight through and a fix is worth ~43 km.
-
-**The same Kabsch rotation yields three products** — the position fix, the
-mounting calibration and the heading — which is why the celestial compass costs
-almost nothing to add.
-
-**Mounting and heading split off before the average**, because they are
-per-frame quantities while the fix is not.
-
-### Code layout
-
-| module | job |
-|---|---|
-| `types` | `Geodetic`, `Epoch`, units, haversine. **Frame conventions live here** |
-| `star_catalog` | Hipparcos subset, proper motion, magnitudes, common names |
-| `sky_model` | RA/Dec to ECEF/NED, refraction, sub-stellar points, **and the position solver** (least squares + RANSAC) — the solver operates on the `StarSight` values this module defines |
-| `attitude` | DCM/Euler, `kabsch`, `averageRotation`, **and `StarAidedAttitude`**, the gyro-bias MEKF built from those helpers |
-| `imaging` | render, detect, centroid, match; matched filter; mesh background |
-| `orbit` | the estimator: orbit fix, mount calibration, compass, simulators |
-| `deadreckon` | 4-state air-data filter (N, E, wind_N, wind_E) |
-| `prior_net` | optional: ONNX detection prior via `cv::dnn` |
-
-Tools: `pipeline` (nav logic, no MAVLink), `celestial_node` (live UDP node),
-`fake_sitl` (replayer), `analyse_log`, `visualise`, `bench`, `gen_dataset`.
-
-**The celestial core is independent of dead reckoning.** `deadreckon` consumes
-fixes; nothing in the core includes it. Delete it and the fix still works.
-
----
-
-## The algorithms
-
-**Position solve** — plane-intersection weighted least squares, SVD-solved (the
-paper's Eq. 7–10): each star gives a plane through Earth's centre and the zenith
-is where they intersect. Wrapped in RANSAC with a 3-star minimal set (the
-paper's Algorithm 1), residuals normalised by `sin(zenith)` so the tolerance
-means an angle, and deterministic via a fixed seed.
-
-**Attitude** — Kabsch/Wahba SVD for the camera-to-NED rotation from matched
-pairs; chordal rotation averaging for combining per-frame mount estimates.
-
-**Orbit averaging**, three variants — naive mean of zenith vectors (Eq. 23),
-heading-weighted mean, and small-circle fit whose axis is the position and whose
-angular radius is the misalignment.
-
-**Star pipeline** — median + MAD robust thresholding, connected-component
-labelling, Gaussian-fit centroiding (5-parameter Gauss-Newton, verified against
-the Cramer-Rao bound), nearest-neighbour matching with a 2x ambiguity guard.
-Optional matched filter and SExtractor-style mesh background, below.
-
-**Sky model** — ERFA precession/nutation/sidereal time, proper motion, Bennett
-and Saemundsson refraction with elevation-dependent weighting.
-
-**Dead reckoning** — 4-state Kalman filter, air-data driven, with a wind random
-walk that absorbs systematic airspeed and heading error.
-
-### Matched filter: use the gyro instead of learning the streak
-
-A star under motion blur is a streak of **known** shape — the AHRS gives the
-body rate, so direction and length are predictable per pixel, and the optimal
-linear detector for a known signal in Gaussian noise is a matched filter.
-Matched stars per frame, which is the figure that feeds the fix:
-
-| exposure | smear | plain | matched filter |
-|---|---|---|---|
-| 20 ms | 4.8 px | 4.2 | **11.8** |
-| 50 ms | 12.1 px | 9.2 | **46.8** |
-| 100 ms | 24.2 px | 13.8 | **53.8** |
-| 200 ms | 48.3 px | 28.4 | **76.0** |
-
-Two subtleties. The smear is **not uniform**: in an orbit the dominant rate is
-about the boresight, which rotates the field rather than translating it, so the
-rotational optical flow is evaluated per pixel. And the filter runs on a
-**decimated** image, with the factor chosen per frame to keep the decimated
-smear above 8 px — that took it from 312 ms to 24.8 ms with no measurable
-accuracy cost. Centroiding is always at full resolution.
-
-### Mesh background
-
-A SExtractor-style background: sigma-clipped estimate per 64 px cell,
-median-filtered across nodes, bilinearly interpolated, subtracted
-(`DetectorConfig::bg_mesh_px`, off by default).
-
-| condition | plain | mesh | gain |
-|---|---|---|---|
-| clear | 38.3 | 36.8 | 0.96x |
-| cloud 0.6 | 25.8 | 26.2 | 1.01x |
-| flare 0.5 | 19.3 | 34.0 | **1.76x** |
-
-Note *which* contaminant it fixes. Lens flare is a steep additive gradient and
-the mesh recovers nearly all of it. Cloud it does not help with at all, because
-cloud's damage is not threshold bias: it attenuates starlight and its glow
-raises the **shot noise** floor. Subtracting a background cannot un-add Poisson
-noise or recover photons that never arrived.
-
----
-
-## Sensor models
-
-Everything the simulator injects, and where the numbers come from.
-
-| term | value | source |
+| orbit | period | mean error |
 |---|---|---|
-| camera | 1936x1216, 53.5 deg FOV, 10 Hz | the paper's Alvium 1800 U-240 |
-| boresight error | 0.4 deg, uncalibrated at departure | assumed |
-| AHRS tilt bias | 0.25 / 0.15 deg | assumed |
-| AHRS tilt drift | 0.15 deg, tau = 60 s | the paper's Figure 5 |
-| maneuver coupling | 0.0041 | **measured in SITL, GNSS-denied** |
-| centroid noise | 10 arcsec | assumed |
-| wind | 5 m/s | the paper's flight conditions |
+| 150 m radius, 1 rev | 38 s | **4.14 km** |
+| 400 m radius, 1 rev | 100 s | 8.80 km |
+| 150 m radius, 4 rev | 151 s | **1.96 km** |
 
-**Maneuver coupling** deserves a note. An accelerometer senses specific force,
-so in a coordinated turn its vertical is pulled toward the aircraft's own down
-axis and the AHRS under-reads the bank. `ErrorModel::ahrs_turn_coupling` is the
-fraction that survives EKF3's compensation. Measured: **0.0009 GPS-aided,
-0.0041 denied** — denial costs 4.6x, because centripetal compensation needs
-velocity and airspeed is a poorer substitute than GPS. It is not linear
-(~0.002 at 10–15 deg of bank, ~0.007 at 25 deg), the denied fit only reached
-25 deg, and the top bin dominates it — treat 0.004 as the middle of a
-0.0015–0.007 range.
+A single frame under the same conditions is 43 km, so the orbit buys a factor of
+ten.
 
-The **orbit radius** is a genuine trade-off. A fix wants a short period, because
-drift only averages out if the orbit is quick against its correlation time; a
-calibration wants low bank, because maneuver coupling puts a bank-proportional
-tilt into the AHRS that `recalibrateMount` books into the mounting. At the
-measured coupling: 150 m gives 8.78 km, **250 m gives 7.27 km**, 400 m gives
-8.76 km, 600 m gives 10.23 km. 250 m is the optimum at both the aided and denied
-coupling, so the choice is not sensitive to which is right.
+**The radius is the finding.** A body-fixed error averages away over a heading
+sweep; AHRS drift is not body-fixed, so it only averages as `sqrt(2*tau/T)` —
+which makes the orbit **period** a design variable. The paper reports 4 km and
+never reports a radius; on this model that number needs an orbit short against
+the drift correlation time.
+
+### 2. Can it navigate a transit?
+
+```bash
+./build/transit_scenario
+```
+
+192 km over water, GNSS-denied: a calibrating loiter at departure, then legs
+separated by fix orbits. The paper stops at a single fix; this adds dead
+reckoning between fixes, a celestial compass for heading, and the estimator
+corrections below.
+
+| quantity | result |
+|---|---|
+| camera boresight, self-calibrated in flight | 0.40 deg -> **0.11 deg** |
+| heading, against a 3 deg magnetometer bias | residual **0.10 deg** |
+| celestial fixes | 10 over 192 km |
+| dead reckoning ALONE | mean 29 km, peak **58 km** (30% of distance) |
+| dead reckoning + fixes | mean **7.3 km**, bounded |
+
+Seed spread is 6.1–8.5 km; quote a sweep, not a run. `--seed N` is provided.
+
+**A fix is an orbit.** With no vertical reference a straight-leg fix carries the
+whole AHRS tilt error and is worth about 40 km, so the aircraft must maneuver to
+navigate. That is the paper's method and it is the operating mode here. The
+transit number is dominated by dead reckoning between orbits, not fix quality:
+orbit more often and it improves.
+
+### 3. Can it cross an ocean and find an island?
+
+Full SITL, GNSS denied 240 s after takeoff, celestial fixes NOT fed back to the
+autopilot — the navigation estimate is a passive observer while ArduPilot flies
+the mission on its own dead reckoning.
+
+![Sagres to Porto Santo](docs/images/portosanto-map-dr.png)
+
+883 km, Sagres to Porto Santo, one night in December. Unaided dead reckoning
+(red) ends **346 km** out, in open Atlantic. The aided tracks stay on truth.
+
+| crossing | flown | unaided DR | aided, median | aided, p90 |
+|---|---:|---:|---:|---:|
+| Canberra demo | 154 km | 56 km | 6.1 km | 15.2 km |
+| Bluff → the Snares | 262 km | 98 km | 8.2 km | 17.4 km |
+| Sagres → Porto Santo | 883 km | 346 km | 6.9 km | 24.7 km |
+
+**Bounded against unbounded is the whole claim**, and it holds at every scale
+tested: unaided error grows to 30–48 % of distance flown, the aided estimate
+does not grow at all.
+
+Whether that is *enough* depends on the target:
+
+* **Porto Santo** — 11 km long, a town, lights visible ~50 km. Found with
+  margin, with or without a horizon sensor.
+* **The Snares** — 3.5 km, uninhabited, unlit. **Missed** by both
+  configurations (12 km and 20 km at the final fix). This is where the system
+  as configured runs out.
+
+Per-crossing numbers, the exposure sweep behind `min_exposure_s`, and the
+horizon-sensor comparison are in **[RESULTS.md](RESULTS.md)**.
+
+### What the camera actually matches
+
+![Star field at one celestial fix](docs/images/starmap.png)
+
+One frame from a GNSS-denied flight: the zenith-pointing Alvium's 53.5° × 35.1°
+field over Canberra, reconstructed from the same Yale catalogue the matcher
+uses. Green rings are stars bright enough for it to identify (V ≤ 4.0), pale
+dots are detectable but too faint to match against. Sagittarius runs down the
+right-hand edge and Grus along the bottom — the southern sky at 21:05 local.
+
+36 of them were matched in flight, and that fix came out 6.74 km from truth.
+There is no shortage of stars: **the star pipeline is not the constraint**, and
+`--imaging` costs about 1 % end to end. Attitude is the constraint — one degree
+of it is 111 km of position.
+
+```bash
+python3 tools/plot/plot_starmap.py runs/<run>/live_horizon.csv out.png --simple
+```
+
+### Performance
+
+```bash
+./build/bench
+```
+
+| stage | per frame | max rate |
+|---|---|---|
+| detect, plain | 5.9 ms | 169 Hz |
+| detect, matched filter | 24.8 ms | 40 Hz |
+| match to catalogue | 0.10 ms | 10070 Hz |
+| per-frame fix (RANSAC) | 1.24 ms | 806 Hz |
+
+The whole flight path fits a 10 Hz camera with 4x margin.
 
 ---
 
@@ -908,77 +977,7 @@ aided.
 
 ---
 
-## What this adds to the paper
-
-**1. Orbit period is a design variable.** The paper reports 4 km and never a
-radius. The averaging only removes body-fixed error, and AHRS drift is not
-body-fixed, so it averages as `sqrt(2*tau/T)`. 150 m gives 4.14 km, 400 m gives
-8.80 km, everything else equal. Their own Figure 5 supplies the drift rate, so
-this follows from their data.
-
-**2. Their conclusion about GPS is an estimator artefact.** They observe 18.27
-km for a GPS-guided orbit against 2.29 km flying fixed attitude and conclude GPS
-guidance is harmful. It is Eq. (23): an arithmetic mean assumes uniform sampling
-in heading, and a GPS-guided track in wind does not provide it. Weighting by
-heading increment gives 4.03 -> **0.11 km** with no change to the flight plan.
-Caveat: that win is masked once realistic AHRS drift is modelled (6.94 -> 5.86
-km) — it fixes a sampling bias, and drift dominates. Both bounds are asserted in
-`testHeadingWeightedMean`.
-
-**3. Navigation, not just a fix.** The paper stops at one orbit. This adds dead
-reckoning between fixes, a celestial compass recovering a 3 deg magnetometer
-bias to 0.10 deg from the same Kabsch rotation, and the fusion that bounds error
-over a 192 km transit at 7.3 km against 29 km unaided.
-
-**4. Calibrate once, at low bank.** Maneuver coupling puts a bank-proportional
-tilt into the AHRS which `recalibrateMount` books into the mounting.
-Recalibrating at every fix orbit made the boresight wander between 0.11 and
-0.46 deg. The mounting is a bracket; estimate it once, where the bank is lowest.
-
-Also: the star pipeline uses Gaussian-fit centroiding rather than the paper's
-3x3 centre-of-gravity window, which is 7–10x better and reaches the Cramer-Rao
-bound; and the detector adds a gyro-informed matched filter, where the paper's
-successor reaches for a neural network instead.
-
----
-
-## Optional extras
-
-Both off by default, both tested in their absent state.
-
-**Star-aided attitude** (`attitude.hpp`, and `analyse_log --star-aided`) — a 6-state multiplicative EKF
-estimating gyro bias from absolute star attitude. Star directions in ECEF do not
-depend on position, so the *sequence* of star attitudes observes gyro bias even
-though a single fix cannot separate tilt from position. Verified in simulation
-only: unaided attitude drifts to 0.146 deg peak over 302 s, aided holds 0.042
-deg.
-
-Now also runnable on a real log — `dump_log.py` carries the gyro and
-`analyse_log --star-aided` recomputes the fix with the corrected attitude.
-Measured, it improves the ATTITUDE by 2.4x (0.95 -> 0.40 deg) and leaves the FIX
-essentially unchanged, because converting the star attitude from ECEF to NED
-needs a position and an error there enters as a constant NED rotation that the
-orbit cannot average away. See NOTES-private.md.
-
-**Learned detection prior** (`prior_net.hpp`) — an ONNX model run through
-`cv::dnn`, producing a **prior** rather than a decision. It lowers the detection
-threshold between `threshold_k` and `threshold_k_low`; the detection still has
-to clear a real significance floor from actual photons, and the centroid is
-always measured on the original image. So it **cannot hallucinate** a star
-(confidence over empty sky yields nothing) and **cannot delete** one (a zero
-prior leaves the nominal threshold untouched). `testPriorIsBounded` asserts the
-exact equivalence: prior = 1 everywhere is identical to hand-setting the low
-threshold, prior = 0 is identical to the ordinary detector. The worst an
-adversarial model can do is move you to an operating point you could have chosen
-yourself.
-
-7.3 ms at 1/4 resolution, warmed up at load so the first frame does not pay the
-165 ms lazy-init cost. `scripts/` has the training stub and the dataset
-generator.
-
----
-
-## Known limitations
+## Known limitations and next steps
 
 * **`ahrs_drift_sigma` and `ahrs_drift_tau` are not measured for this airframe.**
   They come from the paper's Figure 5. Of the three parameters this project
@@ -1012,6 +1011,29 @@ generator.
   estimate; ArduPilot flew on its own GNSS-denied dead reckoning throughout, and
   over 13.7 h its own navigation drifted 18.6 km. Closing that loop
   (`--inject`) is implemented but was not part of this campaign.
+
+### Next steps
+
+Each of these is named in a bullet above; collected here so they are not
+buried in prose.
+
+1. **Add the one-per-revolution nav-frame error to the simulator.** It is the
+   reason the simulator and SITL disagree about which estimator is better, and
+   until it is there the simulator cannot be trusted to rank estimators.
+2. **Measure `ahrs_drift_sigma` and `ahrs_drift_tau` on a real airframe.**
+   `tools/analysis/measure_drift_tau.py` does it from a `.BIN`; run against SITL
+   it already says the Gauss-Markov shape is wrong — pitch is white beyond 10 s
+   and roll is periodic at the mission cadence. A Cube Orange would settle it.
+3. **Model camera-to-AHRS timestamp skew.** At 2.4 deg/s, 10 ms is 1.4 arcmin,
+   larger than several terms already budgeted.
+4. **Get real night-sky footage from the airframe.** Everything about detection
+   under cloud is otherwise synthetic and therefore circular.
+5. **Close the loop with `--inject`.** Implemented, never flown; every result
+   here is a passive estimate.
+6. **Map the small-target limit.** 3.5 km missed, 11 km found; the boundary
+   between them is unknown.
+7. **Solve mounting tilt and clocking jointly.** Solving both and subtracting
+   one is what makes `mountTiltOnly` fight a horizon sensor.
 
 ---
 

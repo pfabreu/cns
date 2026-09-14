@@ -2,7 +2,7 @@
 """ArduPilot .BIN -> CSV for Milestone 3.
 
     pip install pymavlink
-    python3 tools/dump_log.py flight.BIN > flight.csv
+    python3 tools/sitl/dump_log.py flight.BIN > flight.csv
 
 Emits one row per ATT message, carrying forward the most recent SIM, GPS and
 ARSP values.

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Plots from a celestial_node CSV. Writes PNGs, no display needed.
 
-    python3 tools/plot_trajectory.py live.csv trajectory.png error.png
+    python3 tools/plot/plot_trajectory.py live.csv trajectory.png error.png
 
 trajectory.png  true track and per-frame fixes, in a fixed box (--box, 5 km)
                 Fixes outside the box are dropped rather than rescaling it:

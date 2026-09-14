@@ -7,7 +7,7 @@
 //         dRA/dt arcsec/yr (NOT mu_alpha*, i.e. cos(dec) NOT folded in),
 //         dDec/dt arcsec/yr, visual magnitude.
 //
-// To regenerate with a different depth, see tools/make_catalog.py.
+// To regenerate with a different depth, see tools/analysis/make_catalog.py.
 
 #include "celestial/star_catalog.hpp"
 

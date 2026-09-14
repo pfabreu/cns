@@ -11,7 +11,7 @@ Reproduce with the commands given under each section.
 
 ## 1. The exposure floor — the one result that is fully swept
 
-**`min_exposure_s` 0.020 → 0.100 in `tools/pipeline.hpp`.**
+**`min_exposure_s` 0.020 → 0.100 in `tools/src/pipeline.hpp`.**
 
 The auto-exposure controller holds star smear at a setpoint
 (`target_smear_px = 8.0`) by *shortening* exposure. In a turn that trades
@@ -68,7 +68,7 @@ is dead reckoning alone.
 
 ```
 cmake --build build -j
-python3 tools/run_sitl_test.py --ardupilot ~/ardupilot
+python3 tools/sitl/run_sitl_test.py --ardupilot ~/ardupilot
 ```
 
 ---
@@ -111,9 +111,9 @@ Two caveats that matter for reading these numbers:
   9.05 km (horizon) against an unaided median of 178 km.
 
 ```
-python3 tools/make_mission.py --lat 37.0086 --lon -8.9480 --track 237.0 --fan 0 \
+python3 tools/sitl/make_mission.py --lat 37.0086 --lon -8.9480 --track 237.0 --fan 0 \
     --legs 16 --leg-km 50 --radius 250 --turns 2 > ardupilot/missions/sagres_portosanto.waypoints
-python3 tools/run_sitl_test.py --ardupilot ~/ardupilot \
+python3 tools/sitl/run_sitl_test.py --ardupilot ~/ardupilot \
     --mission ardupilot/missions/sagres_portosanto.waypoints \
     --location 37.0086,-8.9480,60,237 --utc 2024-12-15T19:00:00 \
     --horizon-compare --run-name portosanto --max-minutes 120
@@ -140,7 +140,7 @@ configuration.
 **Every statistic improves, p90 included.** That is what separates this from the
 earlier comparisons in this session, where the median moved one way and the tail
 the other — the signature of noise rather than effect. It also agrees in
-direction with the measured table in `tools/pipeline.cpp` (6.2 → 2.7 km at a
+direction with the measured table in `tools/src/pipeline.cpp` (6.2 → 2.7 km at a
 360° sweep); the smaller margin here is consistent with that table having been
 taken on a calibrated mount while this mission departs at 0.40° uncalibrated.
 

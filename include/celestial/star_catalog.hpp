@@ -1,7 +1,7 @@
 // star_catalog.hpp — Yale Bright Star Catalogue (BSC5).
 //
 // 5080 stars to V = 6.0, generated into star_catalog_data.cpp by
-// tools/make_catalog.py. Identifiers are HR (Harvard Revised) numbers.
+// tools/analysis/make_catalog.py. Identifiers are HR (Harvard Revised) numbers.
 //
 // The 53.5 x 35.1 deg field of the paper's camera covers ~4.5% of the sky, so
 // the full V=6.0 list puts ~230 stars in frame. That is far more than any real
@@ -21,7 +21,7 @@
 namespace celestial {
 
 namespace detail {
-/// Raw generated row. See tools/make_catalog.py.
+/// Raw generated row. See tools/analysis/make_catalog.py.
 struct CatalogRaw {
   int hr;
   double ra_deg;

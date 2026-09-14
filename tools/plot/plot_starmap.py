@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """The camera's view of the sky at one celestial fix.
 
-    python3 tools/plot_starmap.py live.csv out.png --utc 2024-12-15T19:00:00
+    python3 tools/plot/plot_starmap.py live.csv out.png --utc 2024-12-15T19:00:00
 
 Reconstructs, from the SAME Yale catalogue the matcher uses, which stars fall on
 the sensor at the moment of a fix: zenith-pointing Alvium 1800 U-240, 1936x1216,
@@ -12,7 +12,8 @@ detector -- the node only logs star COUNTS, not identities, unless it was run
 with --frames-dir. So it shows the sky that was there to be matched, and the
 logged count of what actually was.
 """
-import argparse, csv, datetime as dt, math, re
+import argparse
+import pathlib, csv, datetime as dt, math, re
 
 import matplotlib
 matplotlib.use("Agg")
@@ -50,7 +51,12 @@ ap.add_argument("--which", default="last",
                 help="'last' fix, or a sim time in seconds to pick the nearest")
 ap.add_argument("--catalog", default="src/star_catalog_data.cpp")
 ap.add_argument("--place", default="")
-ap.add_argument("--names", default="tools/star_names.tsv",
+ap.add_argument("--simple", action="store_true",
+                help="drop the catalogue-only stars (V 5-6) and the legend "
+                     "footnote. They are most of the dots and none of the "
+                     "information: the matcher never sees them.")
+ap.add_argument("--names",
+                default=str(pathlib.Path(__file__).parent / "star_names.tsv"),
                 help="HR -> designation/proper-name table, from BSC5")
 ap.add_argument("--label-mag", type=float, default=MATCH_MAG,
                 help="label stars at least this bright (default: the matcher's "
@@ -121,6 +127,8 @@ for uu, vv, vmag, hr in pts:
     # Linear in magnitude, not in flux: a flux scale makes Vega 250x the area
     # of a 6th-magnitude star and the chart becomes a few white discs.
     size = max(1.6, 1.5 + 2.1 * (6.5 - vmag))
+    if a.simple and vmag > MAG_LIMIT:
+        continue
     if vmag <= MATCH_MAG:
         ax.plot(uu, vv, "o", color="white", ms=size, zorder=4)
         ax.plot(uu, vv, "o", mfc="none", mec="lime", ms=size + 5, mew=1.0, zorder=5)
@@ -147,16 +155,20 @@ ax.set_xticks([]); ax.set_yticks([])
 for s in ax.spines.values():
     s.set_color("#3a4260")
 place = f" over {a.place}" if a.place else ""
-ax.set_title(f"Final celestial fix{place} — error {err_km:.2f} km\n"
+which = "Final celestial fix" if a.which == "last" else "Celestial fix"
+ax.set_title(f"{which}{place} — error {err_km:.2f} km\n"
              f"{when:%Y-%m-%d %H:%M:%S} UTC   {lat:.3f}, {lon:.3f}   "
              f"heading {math.degrees(yaw):.0f}°   "
              f"{len(pts)} catalogue stars on sensor, {n_logged} matched in flight",
              color="white", fontsize=11)
-ax.text(0.5, -0.045,
-        "green rings = bright enough for the matcher (V ≤ 4.0)   ·   "
-        "pale = detectable (V ≤ 5.0)   ·   grey = catalogue only (V ≤ 6.0)   ·   "
-        f"Alvium 1800 U-240, 53.5° × {math.degrees(2*math.atan((H/2)/FOCAL)):.1f}°, zenith-pointing",
-        transform=ax.transAxes, ha="center", va="top", color="#8b95b5", fontsize=8)
+caption = ("green rings = bright enough for the matcher (V ≤ 4.0)   ·   "
+           "pale = detectable (V ≤ 5.0)")
+if not a.simple:
+    caption += "   ·   grey = catalogue only (V ≤ 6.0)"
+caption += (f"   ·   Alvium 1800 U-240, 53.5° × "
+            f"{math.degrees(2*math.atan((H/2)/FOCAL)):.1f}°, zenith-pointing")
+ax.text(0.5, -0.045, caption, transform=ax.transAxes, ha="center", va="top",
+        color="#8b95b5", fontsize=8)
 fig.tight_layout()
 fig.savefig(a.out, dpi=140, facecolor=fig.get_facecolor(), bbox_inches="tight")
 print(f"wrote {a.out}  ({len(pts)} stars on sensor, fix error {err_km:.2f} km)")

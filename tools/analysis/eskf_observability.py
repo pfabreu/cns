@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Are the tilt states observable alongside position? Analytic, no simulation.
 
-    python3 tools/eskf_observability.py runs/<run>/live.csv
+    python3 tools/analysis/eskf_observability.py runs/<run>/live.csv
 
 WHAT THIS ANSWERS. NOTES-eskf.md proposes replacing the four-state position
 filter with an error-state filter that also carries tilt. Before writing one,

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Trajectory over a satellite basemap.
 
-    python3 tools/plot_map.py a.csv out.png --compare b.csv \
+    python3 tools/plot/plot_map.py a.csv out.png --compare b.csv \
         --labels "no horizon" "horizon" --mark 33.0734,-16.3500,"Porto Santo"
 
 WHY A SEPARATE TOOL. live_view.py plots metres north/east from the first truth

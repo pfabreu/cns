@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Run the whole SITL test unattended: start, fly, deny GNSS, stop, report.
 
-    python3 tools/run_sitl_test.py --ardupilot ~/ardupilot
-    python3 tools/run_sitl_test.py --ardupilot ~/ardupilot --horizon --speedup 20
+    python3 tools/sitl/run_sitl_test.py --ardupilot ~/ardupilot
+    python3 tools/sitl/run_sitl_test.py --ardupilot ~/ardupilot --horizon --speedup 20
 
 Starts SITL and celestial_node, uploads the mission, takes off, denies GNSS once
 established, flies to the end, then kills everything and prints a summary. The
@@ -206,7 +206,9 @@ def main():
                     help="do not stop when the mission completes")
     a = ap.parse_args(joinNegativeValues(sys.argv[1:]))
 
-    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    # repo root: tools/sitl/run_sitl_test.py -> up three, not two. This moved
+    # when tools/ was split into src, sitl, plot and analysis.
+    root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
     # Per-run output directory. Resolved BEFORE the nodes start, so the CSV
     # paths handed to them already point somewhere unique.
@@ -224,7 +226,7 @@ def main():
     mission = os.path.join(root, a.mission)
     if not os.path.exists(mission):
         raise SystemExit(f"no mission at {mission} -- "
-                         f"python3 tools/make_mission.py > {a.mission}")
+                         f"python3 tools/sitl/make_mission.py > {a.mission}")
 
     sim = os.path.join(a.ardupilot, "Tools", "autotest", "sim_vehicle.py")
     if not os.path.exists(sim):
@@ -478,8 +480,8 @@ def report(csv_path):
             print("    NOTE: fixes made it WORSE than unaided dead reckoning.")
             print("          Over a short flight that is expected -- DR is good")
             print("          over minutes. Fly further before concluding.")
-    print(f"\n  next:  python3 tools/live_view.py --csv {csv_path}")
-    print(f"         python3 tools/dump_log.py <logs/NNN.BIN> > flight.csv")
+    print(f"\n  next:  python3 tools/plot/live_view.py --csv {csv_path}")
+    print(f"         python3 tools/sitl/dump_log.py <logs/NNN.BIN> > flight.csv")
     print(f"         ./build/analyse_log flight.csv")
 
 

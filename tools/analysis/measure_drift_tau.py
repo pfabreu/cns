@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Measure ahrs_drift_tau from a flight log instead of assuming it.
 
-    python3 tools/dump_log.py logs/NNNNNNNN.BIN > flight.csv
-    python3 tools/measure_drift_tau.py flight.csv
+    python3 tools/sitl/dump_log.py logs/NNNNNNNN.BIN > flight.csv
+    python3 tools/analysis/measure_drift_tau.py flight.csv
 
 WHY. `ahrs_drift_tau` and `ahrs_drift_sigma` are the two parameters this project
 never measured -- they come from the source paper's Figure 5. NOTES-eskf.md shows

@@ -4,7 +4,7 @@
     ./build/celestial_node --port 14556 --no-inject \
         --csv live.csv --frames-dir frames --frames-every 20 &
     ./build/fake_sitl --port 14556 --speed 25          # or ArduPilot SITL
-    python3 tools/live_view.py --csv live.csv --frames frames
+    python3 tools/plot/live_view.py --csv live.csv --frames frames
 
 LEFT PANE  -- ground truth against the estimate. Three things are drawn and the
    distinction matters: the TRUTH track, the DEAD RECKONED track (airspeed,

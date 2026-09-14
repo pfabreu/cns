@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Generate an ArduPilot mission that demonstrates what this system claims.
 
-    python3 tools/make_mission.py > ardupilot/missions/demo.waypoints
-    python3 tools/make_mission.py --legs 12 --leg-km 15 > ardupilot/missions/long.waypoints
+    python3 tools/sitl/make_mission.py > ardupilot/missions/demo.waypoints
+    python3 tools/sitl/make_mission.py --legs 12 --leg-km 15 > ardupilot/missions/long.waypoints
 
 WHY THIS SHAPE. The claim is not "celestial navigation is accurate" -- over a
 few minutes plain dead reckoning beats it. The claim is that DR error grows

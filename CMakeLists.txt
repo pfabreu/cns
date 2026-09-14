@@ -57,9 +57,9 @@ add_test(NAME imaging COMMAND test_imaging)
 add_test(NAME scenario COMMAND transit_scenario)
 
 # Milestone 3: analyse an ArduPilot SITL log.
-#   python3 tools/dump_log.py flight.BIN > flight.csv
+#   python3 tools/sitl/dump_log.py flight.BIN > flight.csv
 #   ./build/analyse_log flight.csv --imaging
-add_executable(analyse_log tools/analyse_log.cpp)
+add_executable(analyse_log tools/src/analyse_log.cpp)
 target_link_libraries(analyse_log PRIVATE cns)
 
 # Live MAVLink node -- needs the header-only MAVLink v2 library:
@@ -69,9 +69,9 @@ find_path(MAVLINK_INCLUDE ardupilotmega/mavlink.h HINTS ${MAVLINK_DIR})
 if(MAVLINK_INCLUDE)
   foreach(t celestial_node fake_sitl)
     if(${t} STREQUAL celestial_node)
-      add_executable(${t} tools/celestial_node.cpp tools/mavlink_source.cpp tools/pipeline.cpp)
+      add_executable(${t} tools/src/celestial_node.cpp tools/src/mavlink_source.cpp tools/src/pipeline.cpp)
     else()
-      add_executable(${t} tools/${t}.cpp)
+      add_executable(${t} tools/src/${t}.cpp)
     endif()
     target_link_libraries(${t} PRIVATE cns)
     target_include_directories(${t} PRIVATE ${MAVLINK_INCLUDE})
@@ -107,12 +107,12 @@ else()
   message(STATUS "OpenCV not found: PriorNet builds as a stub (this is fine)")
 endif()
 
-add_executable(gen_dataset tools/gen_dataset.cpp)
+add_executable(gen_dataset tools/src/gen_dataset.cpp)
 target_link_libraries(gen_dataset PRIVATE cns)
 
-add_executable(bench tools/bench.cpp)
+add_executable(bench tools/src/bench.cpp)
 target_link_libraries(bench PRIVATE cns)
 
-add_executable(visualise tools/visualise.cpp)
+add_executable(visualise tools/src/visualise.cpp)
 target_link_libraries(visualise PRIVATE cns)
 
