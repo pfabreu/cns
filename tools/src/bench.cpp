@@ -1,10 +1,8 @@
 // Timing benchmark for the star pipeline.
 //
-// Accuracy without a frame rate is half an answer. The matched filter roughly
-// triples identified stars, and it also costs ~50x the plain detector -- which
-// on measurement puts it BELOW the camera frame rate. That is a deployment
-// blocker, not a footnote, so it gets measured here rather than discovered on
-// the aircraft.
+// Accuracy without a frame rate is half an answer. Every stage on the flight
+// path is timed against one frame period, so anything that cannot keep up is
+// found here rather than on the aircraft.
 //
 //   ./build/bench            # all stages
 //   ./build/bench --repeat 20
@@ -69,16 +67,8 @@ int main(int argc, char** argv) {
 
   const Eigen::Matrix3d Ca =
       eulerToDcm(truth[0].roll, truth[0].pitch, truth[0].yaw);
-  const Eigen::Matrix3d Cb =
-      eulerToDcm(truth[1].roll, truth[1].pitch, truth[1].yaw);
-  const Eigen::AngleAxisd aa(Ca.transpose() * Cb);
-  const Eigen::Vector3d w_cam =
-      C_b_c.transpose() * (aa.axis() * aa.angle() * cfg.frame_rate);
 
-  DetectorConfig plain, mf;
-  mf.omega_cam = w_cam;
-  mf.exposure_s = sensor.exposure_s;
-  mf.focal_px = cam.focalPx();
+  DetectorConfig plain;
 
   // The budget: one frame period at the camera rate. Anything slower than this
   // cannot keep up, and frames must be dropped.
@@ -104,12 +94,7 @@ int main(int argc, char** argv) {
       timeIt(repeat, [&] { detectStars(rf.image, plain); });
   row("detect, plain", t_plain, budget, "median+MAD, connected components");
 
-  const double t_mf = timeIt(repeat, [&] { detectStars(rf.image, mf); });
-  char note[160];
-  std::snprintf(note, sizeof note, "%.0fx plain -- SEE README.md", t_mf / t_plain);
-  row("detect, matched filter", t_mf, budget, note);
-
-  const auto dets = detectStars(rf.image, mf);
+  const auto dets = detectStars(rf.image, plain);
   MatcherConfig mc;
   FrameData fd;
   row("match to catalogue",
@@ -135,13 +120,9 @@ int main(int argc, char** argv) {
       budget, "3-star minimal set, 100 iterations");
 
   std::printf("\n  TOTAL flight path (detect + match + fix):\n");
-  std::printf("    plain          %7.2f ms  -> %5.1f Hz\n", t_plain,
-              1000.0 / t_plain);
-  std::printf("    matched filter %7.2f ms  -> %5.1f Hz\n", t_mf,
-              1000.0 / t_mf);
+  std::printf("    %7.2f ms  -> %5.1f Hz\n", t_plain, 1000.0 / t_plain);
   std::printf("\n  Measured on this machine. A Raspberry Pi 5 is several times\n"
               "  slower, so treat anything near the budget here as over it\n"
-              "  there. See the matched-filter section in README.md for the\n"
-              "  polar-warp plan that makes the filter separable.\n\n");
+              "  there.\n\n");
   return 0;
 }

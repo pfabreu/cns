@@ -129,7 +129,7 @@ Inference runs on a DECIMATED image and the prior is upsampled. That is not
 only for speed: a coarse prior cannot target an individual pixel, so the model
 is structurally incapable of fine-grained mischief even inside its permitted
 range. 7.3 ms sits comfortably inside the 100 ms frame budget alongside the
-24.8 ms matched filter -- check `./build/bench` before scaling the model up.
+3.8 ms detector -- check `./build/bench` before scaling the model up.
 
 **Warm up at load, not in flight.** `cv::dnn` initialises layers, allocates
 buffers and selects implementations lazily on the first forward pass, so an
@@ -155,7 +155,7 @@ compiles to a stub that reports unavailable and every caller falls through to
 the ordinary detector. Both builds are tested (`testPriorNetFallback`). It is
 used for exactly one thing -- ONNX inference, so a learned model does not drag
 in a second runtime -- and NOT for thresholding, connected components,
-centroiding, the matched filter or the mesh background, all of which are
+centroiding or the mesh background, all of which are
 hand-written because each is measured and documented and a library call would
 lose the reasoning.
 
@@ -281,8 +281,8 @@ Inference at 484x304, measured:
 
 which is the first direct confirmation of the claim made further up this file
 that OpenCV 5's graph engine is worth having. It also **does not fit the frame
-budget**: 46.9 ms on the installed 4.6, against a 100 ms budget already
-carrying a 24.8 ms matched filter. base=16 at 1/4 decimation is too big. Shrink
+budget**: 46.9 ms on the installed 4.6, against a 100 ms budget that also has to
+carry the detector and the solver. base=16 at 1/4 decimation is too big. Shrink
 the model or decimate harder before this is a flight proposition.
 
 ### Four reasons this is not a drop-in prior
@@ -490,7 +490,7 @@ comparison to keep in mind before anyone proposes this for the flight sensor.
 ### What this does NOT show, and the list is not short
 
 * **The baseline is a plain high-pass over a robust noise estimate**, not this
-  project's `detectStars` with `bg_mesh_px` and the matched filter. It is the
+  project's `detectStars` with `bg_mesh_px` enabled. It is the
   right incumbent for this data -- it is what solved the plate -- but the
   1.81x is NOT a measurement against our own detector.
 * **No motion smear.** At 1624 arcsec/px sidereal drift needs 108 s to cross
@@ -522,7 +522,7 @@ scripts/.venv/bin/python scripts/unet_star_test.py --epochs 150 \
 ```
 
 Figures live in `scripts/images/`, deliberately NOT in `docs/images/` -- that
-directory is the publishable set for the top-level README and RESULTS.md, and
+directory is the publishable set for the top-level README, and
 nothing in this directory is a flight result.
 
 * **The first run of this experiment was wrong** and reported up to 20x. The
@@ -566,6 +566,6 @@ which is the failure mode this whole experiment is about. Access is via
 
 **What none of these give you** is night-sky footage from your airframe, with
 your optics, at your frame rate, with real motion blur. That is the missing
-input for validating the matched filter, for measuring the true star
+input for measuring the true star
 identification rate, and for making any UNet result meaningful. It is the
 highest-value thing to collect on the first flight.

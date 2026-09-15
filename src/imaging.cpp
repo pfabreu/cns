@@ -357,60 +357,7 @@ RenderedFrame renderFrame(const FrameTruth& a, const FrameTruth& b,
 // Detect
 // ---------------------------------------------------------------------------
 
-void rotationalFlow(const Eigen::Vector3d& w, double f, double u, double v,
-                    double& du, double& dv) {
-  // Pure-rotation optical flow. The omega_z terms rotate the field about the
-  // principal point; the omega_x/omega_y terms translate it.
-  du = w.x() * (u * v) / f - w.y() * (f + u * u / f) + w.z() * v;
-  dv = w.x() * (f + v * v / f) - w.y() * (u * v) / f - w.z() * u;
-}
-
 namespace {
-
-/// Matched filter: integrate along the locally-predicted streak.
-///
-/// The kernel is computed PER PIXEL, not per tile. Tiling was tried and is a
-/// trap: a different kernel either side of a tile edge leaves a step in the
-/// filtered map, and every step is a local maximum. Measured, 64 px tiles gave
-/// 73-2603 false detections per frame against 0.1-3.4 for a single global
-/// kernel. Evaluating the flow per pixel costs a handful of flops against a
-/// tap loop that is already there, so the tiling bought nothing anyway.
-std::vector<float> matchedFilterMap(const Image& img,
-                                    const DetectorConfig& cfg) {
-  const int W = img.width, H = img.height;
-  std::vector<float> out(size_t(W) * H, 0.f);
-  const double cu = 0.5 * W, cv = 0.5 * H;
-
-  for (int y = 0; y < H; ++y) {
-    for (int x = 0; x < W; ++x) {
-      double du = 0, dv = 0;
-      rotationalFlow(cfg.omega_cam, cfg.focal_px, x - cu, y - cv, du, dv);
-      du *= cfg.exposure_s;
-      dv *= cfg.exposure_s;
-      const double len = std::hypot(du, dv);
-      const int ntap = std::max(1, std::min(129, int(std::lround(len))));
-      const double ux = (len > 1e-9) ? du / len : 1.0;
-      const double uy = (len > 1e-9) ? dv / len : 0.0;
-
-      double acc = 0;
-      int used = 0;
-      for (int i = 0; i < ntap; ++i) {
-        const double sgn = i - 0.5 * (ntap - 1);
-        const int px = x + int(std::lround(sgn * ux));
-        const int py = y + int(std::lround(sgn * uy));
-        if (px < 0 || py < 0 || px >= W || py >= H) continue;
-        acc += img.at(px, py);
-        ++used;
-      }
-      // Normalising by the taps ACTUALLY used would make the frame border
-      // noisier than the interior and every border pixel a candidate peak.
-      // Normalise by the full kernel instead: truncated windows come out
-      // darker, which is correct -- less signal was integrated.
-      out[size_t(y) * W + x] = float(acc / ntap);
-    }
-  }
-  return out;
-}
 
 /// POLAR MATCHED FILTER: TRIED, REMOVED. Kept as a note so it is not retried.
 ///
@@ -524,117 +471,13 @@ Image meshSubtract(const Image& img, int cell) {
   return out;
 }
 
-/// Box-average decimation. Cheap, and averaging is the right reduction here:
-/// it preserves total flux, which is what the matched filter integrates.
-Image decimate(const Image& img, int d) {
-  Image out;
-  out.width = img.width / d;
-  out.height = img.height / d;
-  out.data.assign(size_t(out.width) * out.height, 0);
-  for (int y = 0; y < out.height; ++y) {
-    for (int x = 0; x < out.width; ++x) {
-      uint32_t acc = 0;
-      for (int j = 0; j < d; ++j)
-        for (int i = 0; i < d; ++i) acc += img.at(x * d + i, y * d + j);
-      out.data[size_t(y) * out.width + x] = uint16_t(acc / (d * d));
-    }
-  }
-  return out;
-}
-
-std::vector<Detection> detectMatched(const Image& img,
-                                     const DetectorConfig& cfg,
-                                     const std::vector<float>& mf, int mw,
-                                     int mh, int d) {
-  std::vector<Detection> dets;
-  const int W = mw, H = mh;          // filtered map is the DECIMATED size
-  const int n = W * H;
-
-  std::vector<float> s;
-  s.reserve(n / 17 + 1);
-  for (int i = 0; i < n; i += 17) s.push_back(mf[i]);
-  std::nth_element(s.begin(), s.begin() + s.size() / 2, s.end());
-  const float med = s[s.size() / 2];
-  for (auto& v : s) v = std::fabs(v - med);
-  std::nth_element(s.begin(), s.begin() + s.size() / 2, s.end());
-  const float sigma = std::max(1e-6f, 1.4826f * s[s.size() / 2]);
-  const float thresh = med + float(cfg.threshold_k) * sigma;
-
-  const double cu = 0.5 * W, cv = 0.5 * H;
-
-  for (int y = 0; y < H; ++y) {
-    for (int x = 0; x < W; ++x) {
-      const float v = mf[size_t(y) * W + x];
-      if (v < thresh) continue;
-
-      // Suppression radius must cover the CORRELATION LENGTH of the filter,
-      // which is the streak itself -- a fixed 3 px window leaves one peak per
-      // few pixels along every streak. This is the difference between a few
-      // false detections and a few thousand.
-      double du = 0, dv = 0;
-      rotationalFlow(cfg.omega_cam, cfg.focal_px / d, x - cu, y - cv, du, dv);
-      du *= cfg.exposure_s; dv *= cfg.exposure_s;
-      const double local_smear = std::hypot(du, dv);
-      // Where there is no smear there is no matched filter: under boresight
-      // rotation the streak length goes to ZERO at the principal point, so the
-      // kernel collapses to one tap and the "filtered" map is just the raw
-      // image. Peak-detecting a raw image at 5 sigma fires on every noise
-      // spike -- this was worth ~2700 false detections per frame. That region
-      // belongs to the ordinary connected-component detector, which runs
-      // alongside; see detectStars.
-      if (local_smear < cfg.mf_min_smear_px) continue;
-      const int rad =
-          std::min(64, std::max(3, int(std::ceil(0.5 * local_smear))));
-
-      bool peak = true;
-      for (int dy = -rad; dy <= rad && peak; ++dy) {
-        const int py = y + dy;
-        if (py < 0 || py >= H) continue;
-        for (int dx = -rad; dx <= rad; ++dx) {
-          const int px = x + dx;
-          if (px < 0 || px >= W || (!dx && !dy)) continue;
-          const float o = mf[size_t(py) * W + px];
-          if (o > v || (o == v && (py < y || (py == y && px < x)))) {
-            peak = false;
-            break;
-          }
-        }
-      }
-      if (!peak) continue;
-
-      // CENTROID AT FULL RESOLUTION. The filter runs decimated; localisation
-      // must not, or the centroid inherits the decimation grid.
-      const int fx = int((x + 0.5) * d), fy = int((y + 0.5) * d);
-      const int half = std::min(96, (rad + 4) * d);
-      const double bgf = med / (1.0);
-      double w = 0, uw = 0, vw = 0;
-      int npx = 0;
-      for (int j = -half; j <= half; ++j) {
-        for (int i = -half; i <= half; ++i) {
-          const int px = fx + i, py = fy + j;
-          if (px < 0 || py < 0 || px >= img.width || py >= img.height) continue;
-          const double val = double(img.at(px, py)) - bgf;
-          if (val <= 0) continue;
-          w += val; uw += val * (px + 0.5); vw += val * (py + 0.5);
-          ++npx;
-        }
-      }
-      if (w <= 0) continue;
-      Detection dd;
-      dd.u = uw / w; dd.v = vw / w; dd.flux = w; dd.n_pixels = npx;
-      dd.elongation = std::max(1.0, std::hypot(du, dv) * d);
-      dets.push_back(dd);
-    }
-  }
-  return dets;
-}
 
 }  // namespace
 
 std::vector<Detection> detectStars(const Image& raw,
                                    const DetectorConfig& cfg) {
   // Mesh background first, if enabled: everything downstream -- threshold,
-  // matched filter, centroid -- then sees a flat field.
+  // centroid -- then sees a flat field.
   const Image bg_removed =
       cfg.bg_mesh_px > 0 ? meshSubtract(raw, cfg.bg_mesh_px) : Image{};
   const Image& img = cfg.bg_mesh_px > 0 ? bg_removed : raw;
@@ -642,42 +485,6 @@ std::vector<Detection> detectStars(const Image& raw,
   const int n = img.width * img.height;
   if (n == 0) return dets;
 
-  // MATCHED FILTER. When a smear is predicted, detect on the filtered map --
-  // which concentrates a streak back into a blob at its centre -- but always
-  // CENTROID on the original image, so localisation quality is unchanged.
-  std::vector<float> mf;
-  Image small;
-  int dec = 1;
-  bool use_mf = false;
-  if (cfg.omega_cam.norm() > 0 && cfg.exposure_s > 0 && cfg.focal_px > 0) {
-    double du_ref = 0, dv_ref = 0;
-    rotationalFlow(cfg.omega_cam, cfg.focal_px, 0.35 * img.width,
-                   0.35 * img.height, du_ref, dv_ref);
-    if (std::hypot(du_ref, dv_ref) * cfg.exposure_s >= cfg.mf_min_smear_px) {
-      // Polar when the field is rotation-dominated, which is the flight case:
-      // in an orbit the boresight rate dwarfs the translation rates. Falls back
-      // to the per-pixel filter when it is not, since the instantaneous centre
-      // then runs off to infinity.
-      // ADAPTIVE. Decimation must not shorten the streak below the point
-      // where there is anything to integrate: at 4x a 12 px streak becomes
-      // 3 px and the filter stops helping (measured, 40.8 -> 10.6 matched
-      // stars). Pick the largest factor that keeps the DECIMATED smear at or
-      // above mf_target_smear_px.
-      //
-      // This also bounds the cost naturally, because the expensive frames are
-      // exactly the long-smear ones that tolerate the most decimation: cost
-      // goes as pixels x taps = N*s/d^3.
-      const double ref_smear =
-          std::hypot(du_ref, dv_ref) * cfg.exposure_s;
-      dec = std::max(1, std::min(cfg.mf_decimate,
-                                 int(ref_smear / cfg.mf_target_smear_px)));
-      small = (dec > 1) ? decimate(img, dec) : img;
-      DetectorConfig sc = cfg;
-      sc.focal_px = cfg.focal_px / dec;   // flow scales with focal length
-      mf = matchedFilterMap(small, sc);
-      use_mf = true;
-    }
-  }
   double bg = 0.0, sigma = 1.0;
   if (cfg.robust_background) {
     // Median + MAD. Robust to the stars themselves and to a vignetted corner,
@@ -785,24 +592,6 @@ std::vector<Detection> detectStars(const Image& raw,
     dets.push_back(d);
   }
 
-  // MERGE the matched-filter detections. The two detectors own different parts
-  // of the frame: the plain one the low-smear region near the boresight, the
-  // filter the streaked outer field. Drop filter detections that duplicate a
-  // plain one.
-  if (use_mf) {
-    const auto extra =
-        detectMatched(img, cfg, mf, small.width, small.height, dec);
-    for (const auto& e : extra) {
-      bool dup = false;
-      for (const auto& d : dets) {
-        if (std::hypot(e.u - d.u, e.v - d.v) < 0.5 * e.elongation + 4.0) {
-          dup = true;
-          break;
-        }
-      }
-      if (!dup) dets.push_back(e);
-    }
-  }
   return dets;
 }
 

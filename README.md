@@ -43,28 +43,34 @@ detectable but too faint. 36 were matched in flight and that fix came out
 
 ## How it works
 
-```
-                        +------------- ORBIT (360 deg of heading) ----------+
-                        |  body-fixed error traces a circle and averages out |
-                        +------------------------+---------------------------+
-                                                 |
- star camera -> detect -> centroid -> match --+-> per-frame fix -> AVERAGE --+
-                                              |   (~43 km)                   |
- IMU / EKF3 attitude -------------------------+                              |
-   (the ONLY vertical reference)              |                              v
-                                              |                      absolute fix
-                                              |                        (~4 km)
-                                              |                              |
-                                              +-> Kabsch --+-> mounting -----+
-                                                           |  (calibrate     |
-                                                           |   ONCE, low bank)
-                                                           |                 v
-                                                           +-> heading -> dead reckoning -> trajectory
-                                                              (celestial        ^    |
-                                                               compass)         |    |
- airspeed + wind ---------------------------------------------------------------+    |
-                                                           +---- dr_ne ------------- +
-                                                    (displacement only, not a dependency)
+```mermaid
+flowchart LR
+    CAM["star camera"] --> PIPE["detect<br/>centroid<br/>match"]
+    AHRS["IMU / EKF3 attitude<br/>the ONLY vertical reference"]
+    AIR["airspeed + wind"]
+
+    PIPE --> FIX["per-frame fix<br/>~43 km"]
+    AHRS --> FIX
+    PIPE --> KAB["Kabsch rotation"]
+    AHRS --> KAB
+
+    KAB --> MNT["mounting<br/>calibrate ONCE, at low bank"]
+    KAB --> HDG["heading<br/>celestial compass"]
+
+    FIX --> AVG["average over 360 deg of heading<br/>body-fixed error cancels"]
+    MNT --> AVG
+    AVG --> ABS["absolute fix<br/>~4 km"]
+
+    ABS --> DR["dead reckoning"]
+    HDG --> DR
+    AIR --> DR
+    DR --> TRAJ["trajectory"]
+    DR -. displacement only .-> AVG
+
+    classDef sensor fill:#dce9fb,stroke:#3a6ea5,color:#000
+    classDef out fill:#d9f2de,stroke:#3d8b52,color:#000
+    class CAM,AHRS,AIR sensor
+    class ABS,TRAJ out
 ```
 
 Three things to read off it.
@@ -77,9 +83,12 @@ about 43 km. Fly a circle and it is worth about 4 km. **The aircraft must
 manoeuvre in order to navigate**, which is why the mission is legs separated by
 fix orbits: the orbits make fixes, the legs are where dead reckoning drifts.
 
-**The same Kabsch rotation yields three products** — the position fix, the
-mounting calibration and the heading — which is why the celestial compass costs
-almost nothing to add.
+**Two solvers share one set of matched stars.** The position fix is a
+plane-intersection least squares (`singleFrameFix`): each star gives a plane
+through Earth's centre and the zenith is where they intersect. The *same*
+matched pairs also feed a Kabsch rotation, which yields the mounting
+calibration and the heading. That reuse is why the celestial compass costs
+almost nothing to add — the stars are already identified.
 
 **Mounting and heading split off before the average**, because they are
 per-frame quantities while the fix is not.
@@ -92,7 +101,7 @@ per-frame quantities while the fix is not.
 | `star_catalog` | Yale BSC5 subset, proper motion, magnitudes, common names |
 | `sky_model` | RA/Dec to ECEF/NED, refraction, sub-stellar points, **and the position solver** (least squares + RANSAC) |
 | `attitude` | DCM/Euler, `kabsch`, `averageRotation`, and `StarAidedAttitude`, a gyro-bias MEKF |
-| `imaging` | render, detect, centroid, match; matched filter; mesh background |
+| `imaging` | render, detect, centroid, match |
 | `orbit` | the estimator: orbit fix, mount calibration, compass, simulators |
 | `deadreckon` | 4-state air-data filter (N, E, wind_N, wind_E) |
 | `prior_net` | optional: ONNX detection prior via `cv::dnn` |
@@ -129,45 +138,6 @@ and Saemundsson refraction with elevation-dependent weighting.
 walk that absorbs systematic airspeed and heading error. Fixes enter as position
 measurements and are gated on a Mahalanobis distance against the filter's own
 covariance, so a bad fix cannot overwrite a good prior.
-
-#### Matched filter
-
-A star under motion blur is a streak of **known** shape — the AHRS gives the
-body rate, so direction and length are predictable per pixel, and the optimal
-linear detector for a known signal in Gaussian noise is a matched filter.
-Matched stars per frame:
-
-| exposure | smear | plain | matched filter |
-|---|---|---|---|
-| 20 ms | 4.8 px | 4.2 | **11.8** |
-| 50 ms | 12.1 px | 9.2 | **46.8** |
-| 100 ms | 24.2 px | 13.8 | **53.8** |
-| 200 ms | 48.3 px | 28.4 | **76.0** |
-
-The smear is **not uniform**: in an orbit the dominant rate is about the
-boresight, which rotates the field rather than translating it, so the rotational
-optical flow is evaluated per pixel. The filter runs on a **decimated** image,
-the factor chosen per frame to keep the decimated smear above 8 px — 312 ms down
-to 24.8 ms with no measurable accuracy cost. Centroiding is always at full
-resolution.
-
-#### Mesh background
-
-A SExtractor-style background: sigma-clipped estimate per 64 px cell,
-median-filtered across nodes, bilinearly interpolated, subtracted
-(`DetectorConfig::bg_mesh_px`, off by default).
-
-| condition | plain | mesh | gain |
-|---|---|---|---|
-| clear | 38.3 | 36.8 | 0.96x |
-| cloud 0.6 | 25.8 | 26.2 | 1.01x |
-| flare 0.5 | 19.3 | 34.0 | **1.76x** |
-
-Note *which* contaminant it fixes. Lens flare is a steep additive gradient and
-the mesh recovers nearly all of it. Cloud it does not help with at all, because
-cloud's damage is not threshold bias: it attenuates starlight and its glow
-raises the **shot noise** floor. Subtracting a background cannot un-add Poisson
-noise or recover photons that never arrived.
 
 ### Sensor models
 
@@ -206,7 +176,7 @@ All off by default, all tested in their absent state.
 vertical reference: it observes the AHRS tilt error directly and, unlike an
 accelerometer, is not confused by the acceleration of a turn, which is exactly
 when the orbit needs it most. Worth about 30% on fix quality; see
-[Results](#a-horizon-sensor-is-worth-about-30). A short moving average on the
+[Results](#7-a-horizon-sensor-is-worth-about-30). A short moving average on the
 tilt measurement is worth a further 37%, but the window must stay under ~3 s.
 
 **Star-aided attitude** (`analyse_log --star-aided`) — a 6-state multiplicative
@@ -256,7 +226,7 @@ nothing else changes. Both build paths are tested.
 |---|---|
 | `test_roundtrip` | geometry, sub-stellar points, position solver, RANSAC |
 | `test_orbit` | orbit averaging, mount calibration, compass, paper replication |
-| `test_imaging` | render, detect, centroid, match, matched filter, mesh background |
+| `test_imaging` | render, detect, centroid, match, mesh background |
 | `test_horizon` | horizon sensor model and tilt fusion |
 | `transit_scenario` | end-to-end smoke test, bounded by CI |
 
@@ -358,16 +328,14 @@ removes and the part it cannot, and predicts the resulting fix error. It needs
 
 ## Results
 
-### 1. Does the paper's method reproduce?
+Everything below is measured. SITL runs are single flights unless a seed count
+is given; the simulator's run-to-run spread on an unchanged configuration is
+6.1–8.5 km, so percentages smaller than that are not quoted as results.
 
-```bash
-./build/test_orbit          # testPaperReplication
-```
+### 1. The paper's method reproduces
 
-Teague & Chahl report **4 km** from one orbit through 360° of compass heading,
-on real flight data. Reproduced here with the same class of error — 0.4°
-uncalibrated mounting, AHRS tilt bias, drift at the rate their own Figure 5
-measures, manoeuvre coupling, 5 m/s wind, six seeds:
+`./build/test_orbit` — 0.4° uncalibrated mounting, AHRS tilt bias, drift at the
+paper's Figure 5 rate, manoeuvre coupling, 5 m/s wind, six seeds.
 
 | orbit | period | mean error |
 |---|---|---|
@@ -375,39 +343,69 @@ measures, manoeuvre coupling, 5 m/s wind, six seeds:
 | 400 m radius, 1 rev | 100 s | 8.80 km |
 | 150 m radius, 4 rev | 151 s | **1.96 km** |
 
-A single frame under the same conditions is 43 km, so the orbit buys a factor
-of ten.
+A single frame under the same conditions is 43 km, so the orbit buys 10x.
+Teague & Chahl report 4 km and never report a radius — **the period is a design
+variable**, because AHRS drift is not body-fixed and only averages as
+`sqrt(2*tau/T)`.
 
-**The radius is the finding.** A body-fixed error averages away over a heading
-sweep; AHRS drift is not body-fixed, so it only averages as `sqrt(2*tau/T)` —
-which makes the orbit **period** a design variable. The paper reports 4 km and
-never reports a radius.
+### 2. It navigates a transit
 
-### 2. Can it navigate a transit?
-
-```bash
-./build/transit_scenario
-```
-
-192 km over water, GNSS-denied: a calibrating loiter at departure, then legs
-separated by fix orbits.
+`./build/transit_scenario` — 192 km over water, GNSS-denied.
 
 | quantity | result |
 |---|---|
-| camera boresight, self-calibrated in flight | 0.40 deg → **0.11 deg** |
-| heading, against a 3 deg magnetometer bias | residual **0.10 deg** |
+| camera boresight, self-calibrated in flight | 0.40° → **0.11°** |
+| heading, against a 3° magnetometer bias | residual **0.10°** |
 | celestial fixes | 10 over 192 km |
 | dead reckoning ALONE | mean 29 km, peak **58 km** (30% of distance) |
 | dead reckoning + fixes | mean **7.3 km**, bounded |
 
-The transit number is dominated by dead reckoning between orbits, not by fix
-quality: orbit more often and it improves.
+### 3. Exposure floor
 
-### 3. Can it cross an ocean and find an island?
+`min_exposure_s` 0.020 → 0.100. Auto-exposure holds smear at a setpoint by
+*shortening* exposure, which in a turn trades photons for sharpness without
+limit. Measured in SITL at a 250 m loiter it wound 200 ms down to 35 ms and
+detections went 43 → 0, costing every fix for the rest of the flight.
+
+Swept in `transit_scenario --imaging`, seeded and deterministic, 5 seeds:
+
+| exposure | smear | detected | matched/frame | frames unusable | fix error |
+|---------:|------:|---------:|--------------:|----------------:|----------:|
+|    20 ms | 1.3 px |      4.3 |           3.9 |         11.3 %  | 18.07 km |
+|    35 ms | 2.3 px |      8.2 |           6.4 |          0.5 %  | 17.24 km |
+|    50 ms | 3.3 px |     11.1 |           8.9 |          0.1 %  | 12.25 km |
+|    75 ms | 4.9 px |     16.7 |          13.2 |          0.1 %  |  7.13 km |
+| **100 ms** | 6.5 px |   23.2 |          18.3 |          0.1 %  | **5.80 km** |
+|   150 ms | 9.8 px |     39.9 |          30.1 |          0.0 %  |  5.51 km |
+|   200 ms | 13.1 px |    50.9 |          37.3 |          0.0 %  |  5.35 km |
+
+**100 ms is the first point on the plateau**, and there is no margin below it:
+75 ms is already 23 % worse and 50 ms is more than double. Above 100 ms the
+curve is flat — 150 and 200 ms are inside the seed spread (sd ≈ 1.2 km, n = 5),
+so the extra 19 matched stars from 100 → 200 ms buy nothing. Past that point
+attitude is the constraint, not the star pipeline.
+
+**Smear is not the thing to minimise.** The 200 ms cell runs at 13 px of smear
+and has the most matched stars of any cell; photons are what is scarce. A floor
+rather than a larger smear setpoint, because the setpoint must be re-derived for
+every turn rate whereas the floor holds regardless.
+
+End to end, same Canberra mission before and after:
+
+| | 35 ms floor | 100 ms floor |
+|---|---|---|
+| fixes | 3 | **35** |
+| fixes span | t = 243–363 s | t = 396–8132 s (whole flight) |
+| detections through turns | 0–3 | median 45 |
+| boresight calibration | never ran (0.4000°) | 0.1851° → 0.0305° |
+
+![Canberra transit with the exposure floor](docs/images/canberra-exposure-floor.png)
+
+### 4. Bounded against unbounded — three crossings
 
 Full SITL, GNSS denied 240 s after takeoff, fixes **not** fed back to the
-autopilot — the navigation estimate is a passive observer while ArduPilot flies
-the mission on its own dead reckoning.
+autopilot: the celestial estimate is a passive observer while ArduPilot flies on
+its own GNSS-denied EKF3.
 
 | crossing | flown | unaided DR | aided, median | aided, p90 |
 |---|---:|---:|---:|---:|
@@ -415,111 +413,123 @@ the mission on its own dead reckoning.
 | Bluff → the Snares | 262 km | 98 km | 8.2 km | 17.4 km |
 | Sagres → Porto Santo | 883 km | 346 km | 6.9 km | 24.7 km |
 
-**Bounded against unbounded is the whole claim**, and it holds at every scale
-tested: unaided error grows to 30–48% of distance flown, the aided estimate does
-not grow at all.
+Unaided error grows to 30–48% of distance flown; the aided estimate does not
+grow at all. On the 883 km crossing that is a **~25x separation**.
+
+![Position error against time](docs/images/portosanto-error-vs-time.png)
+
+The sawtooth is the mechanism: error grows along each leg and collapses at each
+fix orbit. It is also why every number here is a median, RMS or p90 over a whole
+flight — a median over a short final window can land in a trough and read far
+better than the endpoint.
 
 ![Canberra demo, 154 km](docs/images/canberra-map-dr.png)
 
-**Canberra, 154 km.** Unaided dead reckoning ends 56 km out; the aided estimate
-holds a 6.1 km median.
-
 ![Bluff to the Snares, 262 km](docs/images/snares-map-dr.png)
 
-**Bluff → the Snares, 262 km.** Unaided DR ends 98 km out, aided median 8.2 km.
-The Snares are 3.5 km, uninhabited and unlit, and this one is **missed** by
-12 km. This is where the system as configured runs out.
-
-Whether the bound is *enough* depends on the target. Porto Santo is 11 km long
-with a town on it and was found with margin; the Snares are 3.5 km, unlit, and
-were missed. Somewhere between those is the limit, and it has not been mapped.
-
-Per-crossing detail is in **[RESULTS.md](RESULTS.md)**.
-
-### What every fix looks like
+### 5. Every fix from one flight
 
 ![Canberra trajectory, dead reckoning and every fix](docs/images/canberra-trajectory-fixes.png)
 
-Every fix the system produced on one flight. Grey is truth, red dashed is dead
-reckoning with no fixes applied, blue is the same filter with fixes fed in, and
-each blue star is one of the **37 fixes** it was given.
-
-The fixes are scattered, and that is the honest picture: individual ones land
+Grey truth, red dashed dead reckoning with no fixes, blue the same filter with
+all **37 fixes** fed in (blue stars; best three in gold). Individual fixes land
 tens of kilometres out. The estimate is not carried by any single fix being
 accurate — it is carried by the fixes being *unbiased*, so the filter is pulled
-back toward truth every time one arrives. Median **6.05 km**, RMS 8.77 km,
-against 57 km unaided. The three best are gold; the best is **1.2 km**.
+back to truth each time one arrives. Median **6.05 km** against 57 km unaided;
+best fix 1.2 km.
 
-The blue track sawtooths — it drifts between orbits and is yanked back at each
-fix — which is why every number here is a median or a p90 over a whole flight
-rather than an instantaneous value.
+### 6. Fix quality is heading coverage
 
-### Fix quality is heading coverage
-
-Because the dominant errors are body-fixed, fix quality is a function of how
-much heading the orbit sweeps, and it is steep. 40 seeds:
+40 seeds. The dominant errors are body-fixed, so quality is a function of sweep:
 
 | revs | sweep | no horizon | 1x Lepton |
 |---|---|---|---|
-| 0.50 | 180 deg | 12.24 km | 8.65 km |
-| 0.75 | 270 deg | 6.99 km | 3.98 km |
-| **1.00** | **360 deg** | **6.18 km** | **2.57 km** |
-| 1.25 | 450 deg | 10.16 km | 4.73 km |
-| **2.00** | **720 deg** | **3.94 km** | **1.66 km** |
-| **3.00** | **1080 deg** | **3.32 km** | **1.38 km** |
+| 0.50 | 180° | 12.24 km | 8.65 km |
+| 0.75 | 270° | 6.99 km | 3.98 km |
+| **1.00** | **360°** | **6.18 km** | **2.57 km** |
+| 1.25 | 450° | 10.16 km | 4.73 km |
+| **2.00** | **720°** | **3.94 km** | **1.66 km** |
+| **3.00** | **1080°** | **3.32 km** | **1.38 km** |
 
 **Whole revolutions are local minima, and 1.25 revolutions is 64% worse than
-1.00 despite covering more sky.** A body-fixed error only cancels if every
-heading is sampled equally, and a fractional sweep leaves the over-sampled
-sector weighted. `Pipeline` therefore trims the solve window to the most recent
-whole number of revolutions, which is free — it discards frames that were
-actively hurting.
+1.00 despite covering more sky** — a body-fixed error only cancels if every
+heading is sampled equally. `Pipeline` therefore trims the window to the most
+recent whole revolution, which is free.
 
-Below one revolution a fix is still emitted, with an honest per-fix `sigma_m`
-derived from the coverage so the filter can weight it; below `min_heading_bins`
-it is refused outright, because there the error is a bias rather than noise and
-no sigma describes it honestly.
+### 7. A horizon sensor is worth about 30%
 
-### A horizon sensor is worth about 30%
+An LWIR camera looking forward observes the AHRS tilt error directly. Measured
+with `--horizon-compare`, which runs two nodes on **one** flight so both arms
+consume identical telemetry.
 
-An LWIR camera looking forward, measured over 8 seeds at 250 m:
+| mission | orbit fix | per-frame | DR median | RMS | p90 |
+|---|---:|---:|---:|---:|---:|
+| Canberra, 152 km | **−29.8%** | −46.8% | −10.8% | −19.3% | −27.0% |
+| Porto Santo, 883 km | **−33.0%** | −32.7% | −20.5% | ±0% | +3.5% |
+| Bluff → Snares, 205 km | −12.9% | — | **−41.3%** | **−40.7%** | −31.6% |
 
-| configuration | tilt error | orbit fix |
-|---|---|---|
-| none | 0.261 deg | 6.12 km |
-| **1x FLIR Lepton 2.5** | **0.078 deg** | **1.34 km** |
-| 2x Lepton 2.5, fore/aft | 0.058 deg | 1.23 km |
+**The fix-quality improvement reproduces at ~30% across two independent
+missions** — that is the strongest horizon result here, and it is the metric the
+sensor acts on directly. The *filtered* track is weaker: the median improves but
+the tail does not, so read it as **the horizon improves the typical fix, not the
+worst case**. Filtered-track percentages are the same order as the simulator's
+own spread and should not be quoted.
 
-Confirmed end to end in SITL with `--horizon-compare`, so both arms see
-identical telemetry:
+In isolation, 8 seeds at 250 m: no horizon 6.12 km, 1x Lepton 2.5 **1.34 km**,
+2x fore/aft 1.23 km. A short moving average on the tilt is worth a further 37%,
+but the window must stay under ~3 s.
 
-| mission | orbit fix | filtered median |
+![Position error against time, no horizon against a Lepton](docs/images/canberra-true-horizon-error.png)
+
+### 8. Would it actually find the island?
+
+Steering on the celestial estimate, **the position error is the miss distance**.
+Detection thresholds from 800 m AMSL on a clear night:
+
+| threshold | distance |
+|---|---:|
+| island length (Porto Santo) | 11 km |
+| town lights, Vila Baleira | ~50 km |
+| sea horizon from 800 m | 101 km |
+| 517 m peak over that horizon | 182 km |
+
+Sagres → Porto Santo, 883 km, both arms on one flight:
+
+| arm | final-hour median | p90 | verdict |
+|---|---:|---:|---|
+| no horizon | 10.97 km | 23.90 km | **OVERHEAD** |
+| 1x Lepton 2.5 | 18.75 km | 24.74 km | YES — town lights in range |
+
+**Both find it**, worst case ~25 km against a ~50 km detection range. Removing
+the horizon sensor costs ~30% on fix quality and does **not** change whether the
+aircraft makes landfall.
+
+The Snares — 3.5 km, uninhabited, unlit, 130 m high — is the target small enough
+to fail:
+
+| at the final fix | estimate error | distance from the island |
 |---|---:|---:|
-| Canberra, 152 km | −29.8% | −10.8% |
-| Bluff → the Snares, 205 km | −12.9% | **−41.3%** |
-| Sagres → Porto Santo, 883 km | −33.0% | −20.5% |
+| no horizon | 20.04 km | 23.30 km |
+| 1x Lepton 2.5 | **12.35 km** | **15.33 km** |
 
-Fix quality improves ~30% consistently. The effect on the *filtered* track
-varies with how bad the dead reckoning being corrected is.
+**Both miss.** This marks where the system as configured stops working: **an
+unlit target under ~10 km is beyond it.**
 
-### Validated against ArduPilot SITL
+### 9. Validated against ArduPilot SITL
 
-Not just simulation. `analyse_log` on SITL flights, GPS-aided and then denied
-mid-flight.
+`analyse_log` on SITL flights, GPS-aided then denied mid-flight.
 
 **The paper's central assumption is false as stated.** It assumes the AHRS
-attitude error is body-fixed and therefore averages away over a heading sweep.
-Measured, it is not: there is a clean one-per-revolution component, peak-to-peak
-0.47 deg in pitch, with consistent phase across revolutions. Part of the error
-survives.
+attitude error is body-fixed and averages away over a heading sweep. Measured,
+there is a clean one-per-revolution component, peak-to-peak 0.47° in pitch, with
+consistent phase. Part of the error survives.
 
-**But the surviving part is measurable.** The NED-mean horizontal component
-against the measured fix error, six aided orbits: mean ratio **1.03**. So the
-claim becomes checkable in flight rather than assumed — the error decomposes,
-the orbit removes the body-fixed part, and what survives predicts the residual.
+**But the surviving part is measurable.** NED-mean horizontal against measured
+fix error, six aided orbits: mean ratio **1.03**. The error decomposes, the
+orbit removes the body-fixed part, and what survives predicts the residual.
 
-**Denial roughly doubles the irreducible error**: NED-mean horizontal 0.085 →
-0.158 deg, position error 3.2–10.2 km aided against 4.0–15.9 km denied.
+**Denial roughly doubles the irreducible error**: NED-mean horizontal 0.085° →
+0.158°, position error 3.2–10.2 km aided against 4.0–15.9 km denied.
 
 | estimator, GNSS-denied, 4 orbits | mean | worst |
 |---|---|---|
@@ -527,18 +537,18 @@ the orbit removes the body-fixed part, and what survives predicts the residual.
 | heading-weighted | 10.36 km | 15.90 km |
 | **circle fit, 1 pass** | **6.93 km** | **9.12 km** |
 
-### Performance
+### 10. Performance
 
 | stage | per frame | max rate |
 |---|---|---|
-| detect, plain | 5.9 ms | 169 Hz |
-| detect, matched filter | 24.8 ms | 40 Hz |
-| match to catalogue | 0.10 ms | 10070 Hz |
-| per-frame fix (RANSAC) | 1.24 ms | 806 Hz |
+| detect | 3.80 ms | 263 Hz |
+| match to catalogue | 0.02 ms | 45170 Hz |
+| per-frame fix (RANSAC) | 0.80 ms | 1246 Hz |
 
-The whole flight path fits a 10 Hz camera with 4x margin. Real detection and
-matching cost about 1% end to end — **the star pipeline is not the constraint.
-Attitude is**, and one degree of it is 111 km of position.
+**4.6 ms total against a 100 ms budget**, so a 10 Hz camera has 20x margin.
+`./build/bench --repeat 20`. Real detection and matching cost about 1%
+end to end — **the star pipeline is not the constraint. Attitude is**, and one
+degree of it is 111 km of position.
 
 ---
 
@@ -558,7 +568,7 @@ Attitude is**, and one degree of it is 111 km of position.
 * **The sky is modelled as permanently dark**, with no sun and no twilight, so a
   flight longer than the night it departs in is given stars it could not really
   see. The 883 km crossing overruns its night by ~2.7 h; its night-window
-  figures are quoted separately in RESULTS.md.
+  figures are quoted separately above.
 * **Small unlit targets are beyond it.** 3.5 km missed, 11 km found; the
   boundary has not been mapped.
 * **Fixes are not fed back to the autopilot.** Every result here is a passive

@@ -34,9 +34,9 @@
 //
 //     prior       <- the network. P(star | context). Wide receptive field,
 //                    structured background, "is this region attenuated?"
-//     likelihood  <- the matched filter. P(data | star). Provably optimal for
-//                    a known signal shape in Gaussian noise; there is nothing
-//                    for a network to add.
+//     likelihood  <- the detector. P(data | star), measured from actual
+//                    photons against a robust noise estimate; there is
+//                    nothing for a network to add.
 //     decision    <- the threshold, combining them.
 //
 // A network that outputs detections directly is using the prior AS the

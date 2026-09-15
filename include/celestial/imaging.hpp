@@ -84,8 +84,8 @@ struct SensorModel {
 
   // --- weather (for the learned-detector experiment) ------------------------
   //
-  // A matched filter handles motion blur, which is a KNOWN signal shape. It
-  // does nothing about cloud, which is structured, non-stationary and looks
+  // Motion blur is a KNOWN signal shape and can be handled deterministically.
+  // Cloud cannot: it is structured, non-stationary and looks
   // like signal at some scales -- and cloud is precisely where Teague & Chahl
   // (2026) report a UNet holding F1 0.77 while every classical baseline drops
   // below 0.26. Nothing can be evaluated on that claim until the simulator has
@@ -194,52 +194,6 @@ struct DetectorConfig {
   /// PSF wings; too small reintroduces truncation bias.
   int fit_halfwidth = 5;
 
-  // --- matched filter ------------------------------------------------------
-  //
-  // A star under motion blur is a STREAK, and a streak is a signal of known
-  // shape: the AHRS gives the body rate, so its direction and length in every
-  // pixel are predictable. The optimal linear detector for a known signal in
-  // approximately Gaussian noise is a matched filter -- integrate along the
-  // streak, which recovers the SNR that smearing spread out.
-  //
-  // Teague & Chahl (2026) attack the same problem with a UNet, and their
-  // baselines (adaptive Gaussian, Niblack, Bernsen) are all single-frame
-  // spatial thresholds that know nothing about the streak. They chose that
-  // deliberately: their method "obviates the need for angular rate sensors
-  // altogether". We HAVE a gyro, so much of what they must learn, we can
-  // simply know.
-  //
-  // NOTE THE SMEAR IS NOT UNIFORM. In an orbit the dominant rate is about the
-  // BORESIGHT, which rotates the field rather than translating it: a star at
-  // radius r from the principal point smears tangentially by r*omega*t, so
-  // direction and length both vary across the frame. A single global kernel is
-  // wrong; the flow is evaluated PER PIXEL. (Per tile was tried and floods the
-  // detector with false peaks at the tile edges -- see src/imaging.cpp.)
-  //
-  // Set `omega_cam` and `exposure_s` to enable; leave omega zero to disable.
-  Eigen::Vector3d omega_cam = Eigen::Vector3d::Zero();  ///< rad/s, camera axes
-  double exposure_s = 0.0;
-  double focal_px = 0.0;      ///< required when the filter is enabled
-  /// Below this smear the filter is pointless and is skipped.
-  double mf_min_smear_px = 2.0;
-  /// DECIMATION for the matched filter. The filter is a DETECTION stage, and
-  /// detection does not need full resolution: a star smeared over 24 px is
-  /// still 6 px at 4x decimation, and the centroid is computed at full
-  /// resolution afterwards regardless.
-  ///
-  /// The saving is quadratic-ish. Decimating by d cuts the pixel count by d^2
-  /// AND the kernel length by d, so the filter cost falls by about d^3: 4x
-  /// decimation is ~64x less work. This is what makes the filter fit the frame
-  /// budget; see README.md for the polar-coordinate approach that was
-  /// tried first and was slower than the thing it replaced.
-  ///
-  /// Maximum decimation; the factor actually used is chosen per frame so the
-  /// decimated smear stays at or above `mf_target_smear_px`. 1 disables it.
-  int mf_decimate = 4;
-  /// Shortest decimated streak worth filtering. Below this there is nothing
-  /// left to integrate and the filter stops earning its cost.
-  double mf_target_smear_px = 8.0;
-
   // --- mesh background ------------------------------------------------------
   //
   // Cell size in pixels for a SExtractor-style background mesh: a sigma-clipped
@@ -297,12 +251,6 @@ struct DetectorConfig {
   std::vector<float> prior;
   double threshold_k_low = 3.0;
 };
-
-/// Image-plane velocity at pixel offset (u, v) from the principal point, for a
-/// pure camera rotation. This is the standard rotational optical flow, and the
-/// `omega_z` terms are what produce field rotation about the boresight.
-void rotationalFlow(const Eigen::Vector3d& omega_cam, double focal_px, double u,
-                    double v, double& du, double& dv);
 
 struct Detection {
   double u = 0.0, v = 0.0;  ///< background-subtracted weighted centroid

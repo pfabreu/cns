@@ -158,7 +158,7 @@ class UNet(nn.Module):
 
     Two reasons not to scale this up without measuring. It has to run at 10 Hz
     on a Raspberry Pi alongside everything else -- check ./build/bench, the
-    matched filter alone is 24.8 ms of a 100 ms budget. And UNet is a poor
+    detector is 3.8 ms of a 100 ms budget. And UNet is a poor
     architectural fit for tiny objects: a 2 px star is sub-pixel by the third
     downsample, so the deep path contributes little and the skip connections do
     the work. If this underperforms, a dilated stack with no downsampling is

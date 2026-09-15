@@ -99,4 +99,4 @@ data/
 # python bytecode from scripts/
 __pycache__/
 *.pyc
-logs/
+logs/*

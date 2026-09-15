@@ -333,23 +333,7 @@ int main(int argc, char** argv) {
       const RenderedFrame rf =
           renderFrame(truth[fi], truth[fi + 1], period, field, vmags, cam,
                       C_b_c_true, sensor, unsigned(fi + 1));
-      // MATCHED FILTER: predict the streak from the attitude change across
-      // the exposure. In flight this is the gyro. Roughly 3-5x more identified
-      // stars under blur; see testMatchedFilter.
-      DetectorConfig d = dcfg;
-      {
-        const Eigen::Matrix3d Ca = eulerToDcm(truth[fi].roll, truth[fi].pitch,
-                                              truth[fi].yaw);
-        const Eigen::Matrix3d Cb = eulerToDcm(truth[fi + 1].roll,
-                                              truth[fi + 1].pitch,
-                                              truth[fi + 1].yaw);
-        const Eigen::AngleAxisd aa(Ca.transpose() * Cb);
-        d.omega_cam = C_b_c_true.transpose() *
-                      (aa.axis() * aa.angle() * a.frame_rate);
-        d.exposure_s = sensor.exposure_s;
-        d.focal_px = cam.focalPx();
-      }
-      const auto dets = detectStars(rf.image, d);
+      const auto dets = detectStars(rf.image, dcfg);
       FrameData fd;
       const int m =
           matchDetections(dets, truth[fi].epoch, est[fi], nominalCameraMount(),
@@ -359,7 +343,17 @@ int main(int argc, char** argv) {
       fd.yaw_est = dcmToEuler(est[fi]).z();
       fd.C_l_b_est = est[fi];
       fd.truth = truth[fi].pos;
-      smear_sum += d.omega_cam.norm() * d.exposure_s * d.focal_px;
+      {
+        const Eigen::Matrix3d Ca = eulerToDcm(truth[fi].roll, truth[fi].pitch,
+                                              truth[fi].yaw);
+        const Eigen::Matrix3d Cb = eulerToDcm(truth[fi + 1].roll,
+                                              truth[fi + 1].pitch,
+                                              truth[fi + 1].yaw);
+        const Eigen::AngleAxisd aa(Ca.transpose() * Cb);
+        const Eigen::Vector3d w = C_b_c_true.transpose() *
+                                  (aa.axis() * aa.angle() * a.frame_rate);
+        smear_sum += w.norm() * sensor.exposure_s * cam.focalPx();
+      }
       n_det += (int)dets.size();
       n_matched += m;
       if (m < 3) ++n_dropped;

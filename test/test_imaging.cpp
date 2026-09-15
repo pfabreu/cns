@@ -543,85 +543,6 @@ void testCramerRao() {
               "  flatters the number on top of that.\n");
 }
 
-/// MATCHED FILTER: use the gyro instead of learning the streak.
-///
-/// A star under motion blur is a streak of KNOWN shape -- the AHRS gives the
-/// body rate, so direction and length are predictable per pixel. The optimal
-/// linear detector for a known signal in Gaussian noise is a matched filter.
-///
-/// Teague & Chahl (2026) solve the same problem with a UNet, and their
-/// baselines are single-frame spatial thresholds that know nothing about the
-/// streak -- deliberately, since their method "obviates the need for angular
-/// rate sensors altogether". We have a gyro, so much of what they must learn,
-/// we can know.
-///
-/// Asserts the end-to-end figure, MATCHED stars per frame, not raw detections:
-/// the filter produces many false peaks, and they are supposed to die in the
-/// matcher because they do not land near a predicted star.
-void testMatchedFilter() {
-  std::printf("\n=== TEST: matched filter vs plain detection ===\n");
-
-  OrbitConfig cfg;
-  cfg.centre = Geodetic::fromDegrees(-30.89, 136.56, 800.0);
-  cfg.airspeed = 25.0;
-  cfg.frame_rate = 10.0;
-  cfg.radius_m = 150.0;
-  cfg.revolutions = 0.3;
-  cfg.gps_guided_track = false;
-  const auto truth = generateOrbit(cfg);
-
-  const auto cat = catalogBrighterThan(5.5);
-  StarField field(cat, truth[truth.size() / 2].epoch);
-  std::vector<double> vmags;
-  for (size_t i = 0; i < field.size(); ++i) vmags.push_back(field.vmag(i));
-
-  Camera cam;
-  const Eigen::Matrix3d C_b_c = nominalCameraMount();
-
-  std::printf("  %8s %8s %12s %10s\n", "exposure", "smear", "plain matched",
-              "MF matched");
-  double gain_worst = 1e9;
-  for (double exp_s : {0.05, 0.10, 0.20}) {
-    SensorModel sensor;
-    sensor.exposure_s = exp_s;
-    double ma = 0, mb = 0, smear = 0;
-    int nf = 0;
-    for (size_t i = 3; i + 1 < truth.size() && nf < 5; i += 9, ++nf) {
-      const RenderedFrame rf =
-          renderFrame(truth[i], truth[i + 1], 1.0 / cfg.frame_rate, field,
-                      vmags, cam, C_b_c, sensor, unsigned(i + 1));
-      const Eigen::Matrix3d Ca =
-          eulerToDcm(truth[i].roll, truth[i].pitch, truth[i].yaw);
-      const Eigen::Matrix3d Cb =
-          eulerToDcm(truth[i + 1].roll, truth[i + 1].pitch, truth[i + 1].yaw);
-      const Eigen::AngleAxisd aa(Ca.transpose() * Cb);
-      const Eigen::Vector3d w_cam =
-          C_b_c.transpose() * (aa.axis() * aa.angle() * cfg.frame_rate);
-
-      DetectorConfig plain, mfd;
-      mfd.omega_cam = w_cam;
-      mfd.exposure_s = exp_s;
-      mfd.focal_px = cam.focalPx();
-
-      MatcherConfig mc;
-      FrameData f1, f2;
-      ma += matchDetections(detectStars(rf.image, plain), truth[i].epoch, Ca,
-                            C_b_c, cam, field, truth[0].pos, mc, f1);
-      mb += matchDetections(detectStars(rf.image, mfd), truth[i].epoch, Ca,
-                            C_b_c, cam, field, truth[0].pos, mc, f2);
-      double du = 0, dv = 0;
-      rotationalFlow(w_cam, cam.focalPx(), 0.35 * cam.width,
-                     0.35 * cam.height, du, dv);
-      smear += std::hypot(du, dv) * exp_s;
-    }
-    std::printf("  %6.0fms %7.1fpx %12.1f %10.1f\n", exp_s * 1000, smear / nf,
-                ma / nf, mb / nf);
-    if (ma > 0) gain_worst = std::min(gain_worst, mb / ma);
-  }
-
-  check(gain_worst > 1.8,
-        "the matched filter at least doubles identified stars under blur");
-}
 
 /// MESH BACKGROUND: which contaminant it actually fixes.
 ///
@@ -676,14 +597,7 @@ void testMeshBackground() {
                       sensor, unsigned(i + 1));
       const Eigen::Matrix3d Ca =
           eulerToDcm(truth[i].roll, truth[i].pitch, truth[i].yaw);
-      const Eigen::Matrix3d Cb =
-          eulerToDcm(truth[i + 1].roll, truth[i + 1].pitch, truth[i + 1].yaw);
-      const Eigen::AngleAxisd aa(Ca.transpose() * Cb);
-
       DetectorConfig d;
-      d.omega_cam = C_b_c.transpose() * (aa.axis() * aa.angle() * 10.0);
-      d.exposure_s = 0.10;
-      d.focal_px = cam.focalPx();
       DetectorConfig dm = d;
       dm.bg_mesh_px = 64;
 
@@ -700,7 +614,11 @@ void testMeshBackground() {
     if (!std::strcmp(c.name, "clear")) clear_gain = g;
   }
 
-  check(flare_gain > 1.3, "mesh background recovers the flare loss");
+  // 1.15, not 1.3. The 1.76x this once asserted was measured with the matched
+  // filter enabled in this test; when the filter was removed from the library
+  // the same measurement gave 1.20x. The mesh still recovers most of the flare
+  // loss, but a plain detector has less to recover.
+  check(flare_gain > 1.15, "mesh background recovers the flare loss");
   check(clear_gain > 0.85,
         "and costs little in clean conditions (guard: it is not free, so it is "
         "off by default)");
@@ -853,7 +771,6 @@ int main(int argc, char** argv) {
   if (!only || only == 5) testDepth();
   if (!only || only == 6) testRealistic();
   if (!only || only == 7) testCramerRao();
-  if (!only || only == 8) testMatchedFilter();
   if (!only || only == 9) testMeshBackground();
   if (!only || only == 10) testPriorIsBounded();
   if (!only || only == 11) testPriorNetFallback();

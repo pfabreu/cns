@@ -40,27 +40,31 @@ struct PipelineConfig {
   /// (5.7 deg/s): the controller wound 200 ms down to 35 ms and detections
   /// went 43 -> 0, which cost every fix for the rest of the flight.
   ///
-  /// Measured, transit_scenario --imaging, 144 runs, 10-20 seeds per cell,
-  /// pooled over 150/250/400 m fix radius:
+  /// Measured, transit_scenario --imaging, 5 seeds per cell. (An earlier
+  /// 144-run sweep gave a flatter curve, but it was taken with the matched
+  /// filter enabled; that filter has since been removed, so these are the
+  /// numbers for the detector this actually runs.)
   ///
   ///     exposure   matched/frame   frames unusable   fix error
-  ///        20 ms        4.2            6.03 %        13.95 km
-  ///        50 ms       12.0            0.00 %         6.73 km
-  ///       100 ms       24.8            0.07 %         6.61 km
-  ///       200 ms       44.8            0.00 %         6.84 km
+  ///        20 ms        3.9           11.3 %         18.07 km
+  ///        35 ms        6.4            0.5 %         17.24 km
+  ///        50 ms        8.9            0.1 %         12.25 km
+  ///        75 ms       13.2            0.1 %          7.13 km
+  ///       100 ms       18.3            0.1 %          5.80 km
+  ///       150 ms       30.1            0.0 %          5.51 km
+  ///       200 ms       37.3            0.0 %          5.35 km
   ///
-  /// There is a CLIFF below ~50 ms and a plateau above it: 50/100/200 ms are
-  /// indistinguishable (spread 0.23 km against sd 2.3, SE 0.42), because past
-  /// that point attitude is the constraint, not the star pipeline. So this is
-  /// not tuned for the best number, it is set to stay off the cliff -- 100 ms
-  /// keeps 3x margin and still sits mid-plateau.
+  /// 100 ms is the FIRST POINT ON THE PLATEAU and there is no margin below it:
+  /// 75 ms is already 23 % worse and 50 ms more than double. Above it the curve
+  /// is flat -- 150 and 200 ms sit inside the seed spread (sd 1.2 km, n = 5) --
+  /// because past that point attitude is the constraint, not the star pipeline.
+  /// Do not lower this without re-running the sweep.
   ///
   /// A floor rather than a bigger target_smear_px on purpose: the smear
   /// setpoint has to be re-derived for every turn rate (8 px means 35 ms at
   /// 5.7 deg/s), the floor holds regardless. Smear is NOT the thing to
-  /// minimise -- 200 ms runs at 12 px of smear and has the most matched stars
-  /// of any cell, because the matched filter takes the streak and photons are
-  /// what is scarce.
+  /// minimise -- 200 ms runs at 13 px of smear and has the most matched stars
+  /// of any cell, because photons are what is scarce.
   double min_exposure_s = 0.100;
   double max_exposure_s = 0.20;
   /// Override for the full-sweep fix sigma, metres. 0 keeps the built-in
