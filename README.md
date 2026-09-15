@@ -43,68 +43,83 @@ detectable but too faint. 36 were matched in flight and that fix came out
 
 ## How it works
 
-```mermaid
-flowchart LR
-    CAM["star camera"] --> PIPE["detect<br/>centroid<br/>match"]
-    AHRS["IMU / EKF3 attitude<br/>the ONLY vertical reference"]
-    AIR["airspeed + wind"]
+A zenith-pointing camera takes a frame. Stars are detected, centroided and
+matched against the Yale catalogue, which turns the frame into a set of
+identified directions in camera axes. Those directions, plus the AHRS attitude,
+are all the fix needs — **the IMU is the only vertical reference in the system**,
+and that is what makes everything else follow.
 
-    PIPE --> FIX["per-frame fix<br/>~43 km"]
-    AHRS --> FIX
-    PIPE --> KAB["Kabsch rotation"]
-    AHRS --> KAB
+Each frame then feeds two solvers that share the same matched stars. The first
+computes a **position**: every identified star gives a plane through Earth's
+centre, and the zenith is where those planes intersect. The second computes a
+**rotation** from the same pairs, which yields the camera **mounting** and the
+**heading** — a celestial compass that costs almost nothing to add, because the
+stars are already identified.
 
-    KAB --> MNT["mounting<br/>calibrate ONCE, at low bank"]
-    KAB --> HDG["heading<br/>celestial compass"]
+A single frame's position fix is poor, around **43 km**. The reason is the
+vertical reference: the AHRS tilt error and the camera mounting error are both
+*body-fixed*, so they displace the fix in a fixed direction relative to the
+aircraft. Averaging frames on a straight leg does not help, because the error
+does not change.
 
-    FIX --> AVG["average over 360 deg of heading<br/>body-fixed error cancels"]
-    MNT --> AVG
-    AVG --> ABS["absolute fix<br/>~4 km"]
+**Flying a circle does.** Over 360° of heading a body-fixed error points every
+direction in turn and averages to nothing, which takes the fix to about
+**4 km**. That is why the orbit is the estimator rather than a flight-planning
+detail, and why **the aircraft must manoeuvre in order to navigate**. The
+mission is therefore legs separated by fix orbits: the orbits make fixes, the
+legs are where dead reckoning drifts. Mounting and heading are pulled out
+*before* the average, since they are per-frame quantities while the fix is not,
+and the mounting is calibrated once at departure where the bank is lowest.
 
-    ABS --> DR["dead reckoning"]
-    HDG --> DR
-    AIR --> DR
-    DR --> TRAJ["trajectory"]
-    DR -. displacement only .-> AVG
+What survives the average is the part of the attitude error that is **not**
+body-fixed. That residual is the system's floor, and one degree of it is 111 km
+of position.
 
-    classDef sensor fill:#dce9fb,stroke:#3a6ea5,color:#000
-    classDef out fill:#d9f2de,stroke:#3d8b52,color:#000
-    class CAM,AHRS,AIR sensor
-    class ABS,TRAJ out
-```
+Between orbits a four-state Kalman filter dead-reckons on airspeed and wind,
+using the celestial heading. Each absolute fix enters as a position
+measurement, gated against the filter's own covariance so a bad fix cannot
+overwrite a good prior. The filter's displacement is fed back into the orbit
+solver to compensate for the aircraft moving during the sweep — displacement
+only, never position, so it is not a circular dependency. Dead reckoning alone
+grows without limit; the fixes bound it. That is the whole claim.
 
-Three things to read off it.
-
-**The orbit is the estimator, not a flight-planning detail.** With no vertical
-reference, the mounting error and the AHRS tilt bias are both *body-fixed*, and
-the only thing that removes them is averaging over a heading sweep. On a
-straight leg there is no sweep, so a fix carries the whole error and is worth
-about 43 km. Fly a circle and it is worth about 4 km. **The aircraft must
-manoeuvre in order to navigate**, which is why the mission is legs separated by
-fix orbits: the orbits make fixes, the legs are where dead reckoning drifts.
-
-**Two solvers share one set of matched stars.** The position fix is a
-plane-intersection least squares (`singleFrameFix`): each star gives a plane
-through Earth's centre and the zenith is where they intersect. The *same*
-matched pairs also feed a Kabsch rotation, which yields the mounting
-calibration and the heading. That reuse is why the celestial compass costs
-almost nothing to add — the stars are already identified.
-
-**Mounting and heading split off before the average**, because they are
-per-frame quantities while the fix is not.
-
-### Code layout
+### The algorithms, and where they live
 
 | module | job |
 |---|---|
 | `types` | `Geodetic`, `Epoch`, units, haversine. **Frame conventions live here** |
 | `star_catalog` | Yale BSC5 subset, proper motion, magnitudes, common names |
-| `sky_model` | RA/Dec to ECEF/NED, refraction, sub-stellar points, **and the position solver** (least squares + RANSAC) |
+| `sky_model` | RA/Dec to ECEF/NED, refraction, sub-stellar points, **and the position solver** |
 | `attitude` | DCM/Euler, `kabsch`, `averageRotation`, and `StarAidedAttitude`, a gyro-bias MEKF |
 | `imaging` | render, detect, centroid, match |
 | `orbit` | the estimator: orbit fix, mount calibration, compass, simulators |
 | `deadreckon` | 4-state air-data filter (N, E, wind_N, wind_E) |
 | `prior_net` | optional: ONNX detection prior via `cv::dnn` |
+
+**Position solve** (`sky_model`) — plane-intersection weighted least squares,
+SVD-solved, wrapped in RANSAC with a 3-star minimal set. Residuals are
+normalised by `sin(zenith)` so the tolerance means an angle, and a fixed seed
+makes it deterministic.
+
+**Attitude** (`attitude`) — Kabsch/Wahba SVD for the camera-to-NED rotation
+from matched pairs; chordal rotation averaging for combining per-frame mount
+estimates.
+
+**Orbit averaging** (`orbit`), three variants — naive mean of zenith vectors,
+heading-weighted mean, and a small-circle fit whose axis is the position and
+whose angular radius is the misalignment.
+
+**Star pipeline** (`imaging`) — median + MAD robust thresholding,
+connected-component labelling, Gaussian-fit centroiding (5-parameter
+Gauss-Newton, verified against the Cramér-Rao bound), nearest-neighbour
+matching with a 2x ambiguity guard.
+
+**Sky model** (`sky_model`) — ERFA precession/nutation/sidereal time, proper
+motion, Bennett and Saemundsson refraction with elevation-dependent weighting.
+
+**Dead reckoning** (`deadreckon`) — 4-state Kalman filter, air-data driven,
+with a wind random walk that absorbs systematic airspeed and heading error.
+Fixes are gated on a Mahalanobis distance against the filter's own covariance.
 
 Tools live in `tools/`: `pipeline` (nav logic, no MAVLink), `celestial_node`
 (live UDP node), `fake_sitl` (replayer), `analyse_log`, `visualise`, `bench`,
@@ -112,32 +127,6 @@ Tools live in `tools/`: `pipeline` (nav logic, no MAVLink), `celestial_node`
 
 **The celestial core is independent of dead reckoning.** `deadreckon` consumes
 fixes; nothing in the core includes it. Delete it and the fix still works.
-
-### The algorithms
-
-**Position solve** — plane-intersection weighted least squares, SVD-solved:
-each star gives a plane through Earth's centre and the zenith is where they
-intersect. Wrapped in RANSAC with a 3-star minimal set, residuals normalised by
-`sin(zenith)` so the tolerance means an angle, deterministic via a fixed seed.
-
-**Attitude** — Kabsch/Wahba SVD for the camera-to-NED rotation from matched
-pairs; chordal rotation averaging for combining per-frame mount estimates.
-
-**Orbit averaging**, three variants — naive mean of zenith vectors,
-heading-weighted mean, and a small-circle fit whose axis is the position and
-whose angular radius is the misalignment.
-
-**Star pipeline** — median + MAD robust thresholding, connected-component
-labelling, Gaussian-fit centroiding (5-parameter Gauss-Newton, verified against
-the Cramér-Rao bound), nearest-neighbour matching with a 2x ambiguity guard.
-
-**Sky model** — ERFA precession/nutation/sidereal time, proper motion, Bennett
-and Saemundsson refraction with elevation-dependent weighting.
-
-**Dead reckoning** — 4-state Kalman filter, air-data driven, with a wind random
-walk that absorbs systematic airspeed and heading error. Fixes enter as position
-measurements and are gated on a Mahalanobis distance against the filter's own
-covariance, so a bad fix cannot overwrite a good prior.
 
 ### Sensor models
 
@@ -573,17 +562,6 @@ degree of it is 111 km of position.
   boundary has not been mapped.
 * **Fixes are not fed back to the autopilot.** Every result here is a passive
   estimate. Closing that loop (`--inject`) is implemented but was not flown.
-
-### Next
-
-1. Add the one-per-revolution nav-frame error to the simulator.
-2. Measure `ahrs_drift_sigma` and `ahrs_drift_tau` on a real airframe —
-   `tools/analysis/measure_drift_tau.py` does it from a `.BIN`.
-3. Model camera-to-AHRS timestamp skew.
-4. Get real night-sky footage from the airframe.
-5. Close the loop with `--inject`.
-6. Map the small-target limit.
-7. Solve mounting tilt and clocking jointly.
 
 ---
 
