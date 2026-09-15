@@ -483,8 +483,8 @@ low-SNR detection that a fixed threshold rejects. Predicted first in this file,
 then measured on real sky, which is worth more than either alone.
 
 For scale: the classical mesh background is worth **1.76x under flare**. On this
-evidence a learned detector under cloud is worth less than the 60 lines of
-SExtractor already in the library are worth under flare. That is the right
+evidence a learned detector under cloud is worth less than the 76-line mesh
+background already in the library is worth under flare. That is the right
 comparison to keep in mind before anyone proposes this for the flight sensor.
 
 ### What this does NOT show, and the list is not short

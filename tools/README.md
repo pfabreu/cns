@@ -35,7 +35,10 @@ itself. That changed when this split happened; if you move it again, fix it.
 
 `live_view.py` (trajectory and error against time, and the frame pane),
 `plot_map.py` (track over Esri World Imagery), `plot_starmap.py` (the camera's
-star field at one fix), `plot_trajectory.py`. `star_names.tsv` is the HR to
+star field at one fix), `plot_orbit_zoom.py` (`--list` tabulates every fix orbit in a run with its
+heading span and surviving tilt; `--compare A B` draws two side by side on one shared
+scale, `--together A B` puts the route and the fixes in one figure),
+`plot_trajectory.py`. `star_names.tsv` is the HR to
 proper-name table and `plot_starmap.py` now resolves it relative to its own
 location, so the script works from any working directory.
 

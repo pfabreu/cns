@@ -176,6 +176,10 @@ def main():
                          "these missions run from north-east to south-west, so "
                          "the START of the track sits in the upper right and a "
                          "legend there covers it.")
+    ap.add_argument("--best", type=int, default=0,
+                    help="highlight and annotate the N lowest-error fixes. All "
+                         "fixes are still drawn -- this only marks which ones "
+                         "the estimate is actually being carried by.")
     ap.add_argument("--fix-labels", type=int, default=1,
                     help="annotate every Nth fix with its time and error. "
                          "1 = all (default, useful live), 0 = none. An 883 km "
@@ -238,6 +242,27 @@ def main():
                 # and WHEN matters -- early ones are taken on an uncalibrated
                 # mounting and are expected to be worse, so a plot without
                 # times hides the convergence.
+                # The best fixes, marked but NOT filtered: a plot showing only
+                # the good ones would misrepresent what the filter is fed.
+                if a.best > 0:
+                    known = [f for f in fixes if f[3] >= 0]
+                    top = sorted(known, key=lambda f: f[3])[:a.best]
+                    if top:
+                        ax_t.plot([p[0] for p in top], [p[1] for p in top], "*",
+                                  color="gold", ms=19, ls="none", mec="k",
+                                  mew=0.8, zorder=6,
+                                  label=f"best {len(top)} fixes "
+                                        f"({top[0][3]/1000:.1f}–"
+                                        f"{top[-1][3]/1000:.1f} km)")
+                        # Best fixes cluster, so alternate the label offset or
+                        # two of them land on top of each other.
+                        offs = [(8, 8), (8, -14), (-64, 8), (-64, -14)]
+                        for k, (px, py, pt, pe) in enumerate(top):
+                            ax_t.annotate(f"{pt/60:.0f}' {pe/1000:.1f}km",
+                                          (px, py), fontsize=8, color="0.15",
+                                          weight="bold", zorder=7,
+                                          xytext=offs[k % len(offs)],
+                                          textcoords="offset points")
                 labelled = (fixes[::a.fix_labels] if a.fix_labels > 0 else [])
                 for px, py, pt, pe in labelled:
                     txt = f"{pt/60:.0f}'" if pe < 0 else f"{pt/60:.0f}' {pe/1000:.0f}km"
